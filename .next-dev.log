@@ -12,3 +12,13 @@
  GET / 200 in 60ms (next.js: 8ms, application-code: 53ms)
  GET / 200 in 43ms (next.js: 3ms, application-code: 39ms)
  GET / 200 in 35ms (next.js: 3ms, application-code: 32ms)
+▲ Next.js 16.2.0 (webpack)
+- Local:         http://localhost:3000
+- Network:       http://172.18.0.1:3000
+- Environments: .env.local
+✓ Ready in 396ms
+- Experiments (use with caution):
+  · serverActions
+
+ GET / 200 in 2.0s (next.js: 1813ms, application-code: 192ms)
+ GET / 200 in 42ms (next.js: 6ms, application-code: 37ms)
