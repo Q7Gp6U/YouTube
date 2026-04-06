@@ -1,0 +1,14 @@
+
+> my-project@0.1.0 dev
+> next dev --webpack
+
+▲ Next.js 16.2.0 (webpack)
+- Local:         http://localhost:3000
+- Network:       http://172.18.0.1:3000
+- Environments: .env.local
+✓ Ready in 439ms
+
+ GET / 200 in 2.3s (next.js: 2.1s, application-code: 197ms)
+ GET / 200 in 60ms (next.js: 8ms, application-code: 53ms)
+ GET / 200 in 43ms (next.js: 3ms, application-code: 39ms)
+ GET / 200 in 35ms (next.js: 3ms, application-code: 32ms)
