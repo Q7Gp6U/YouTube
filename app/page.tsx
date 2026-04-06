@@ -165,7 +165,7 @@ export default function Home() {
               Как это работает
             </a>
             <a href="#what-you-get" className="transition-colors hover:text-primary">
-              Что получите
+              Что внутри
             </a>
           </nav>
         </div>
@@ -178,7 +178,7 @@ export default function Home() {
               <div className="flex items-center gap-2">
                 <Play className="h-4 w-4 fill-primary text-primary" />
                 <span className="text-sm font-medium text-primary">
-                  Вставьте ссылку и получите краткое содержание на русском
+                  Работает не само, а умно - на базе ИИ
                 </span>
               </div>
             </div>
@@ -191,8 +191,7 @@ export default function Home() {
               </h1>
 
               <p className="text-xl leading-relaxed text-muted-foreground">
-                Сервис получает транскрипт через Supadata, затем делает короткую выжимку через Gemini и
-                показывает суть видео без просмотра целиком.
+                Вставь ссылку, получи суть видео буквами
               </p>
             </div>
 
@@ -224,9 +223,9 @@ export default function Home() {
             )}
 
             <div id="what-you-get" className="mt-8 grid w-full max-w-2xl grid-cols-1 gap-6 sm:grid-cols-3">
-              <FeatureCard icon={Zap} title="Автоматически" description="Транскрипт берется через Supadata." />
-              <FeatureCard icon={Target} title="По делу" description="Модель выделяет только главное." />
-              <FeatureCard icon={Gift} title="Для Vercel" description="Подходит для бесплатного тарифа." />
+              <FeatureCard icon={Zap} title="Быстро" description="Результат за 10 секунд" />
+              <FeatureCard icon={Target} title="Точно" description="ИИ выделяет главное" />
+              <FeatureCard icon={Gift} title="Бесплатно" description="Без регистрации" />
             </div>
           </div>
         )}
@@ -241,7 +240,7 @@ export default function Home() {
           id="how-it-works"
           className="mx-auto flex max-w-5xl flex-col items-center justify-between gap-4 px-4 text-sm text-muted-foreground sm:flex-row"
         >
-          <p>© 2026 Кратко. Краткое содержание видео на русском за один запрос.</p>
+          <p>© 2024 Кратко и точка. Все права защищены.</p>
           <div className="flex items-center gap-4">
             <span>Supadata для транскрипта</span>
             <span>Gemini для выжимки</span>
