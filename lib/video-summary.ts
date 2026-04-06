@@ -14,7 +14,7 @@ const SUPADATA_METADATA_TIMEOUT_MS = 5_000
 const SUPADATA_TRANSCRIPT_INITIAL_TIMEOUT_MS = 18_000
 const SUPADATA_TRANSCRIPT_POLL_TIMEOUT_MS = 8_000
 const GEMINI_TIMEOUT_MS = 18_000
-const SUPADATA_METADATA_RETRY_ATTEMPTS = 1
+const SUPADATA_METADATA_RETRY_ATTEMPTS = 0
 const SUPADATA_TRANSCRIPT_INITIAL_RETRY_ATTEMPTS = 1
 const SUPADATA_TRANSCRIPT_POLL_RETRY_ATTEMPTS = 2
 const GEMINI_RETRY_ATTEMPTS = 1
@@ -112,12 +112,10 @@ export async function startVideoSummary(
 ): Promise<SummaryCompletedResponse | SummaryProcessingResponse> {
   const url = normalizeYouTubeUrl(rawUrl)
 
-  const [metadata, transcriptResponse] = await Promise.all([
-    fetchSupadataMetadata(url),
+  const [transcriptResponse, videoTitle] = await Promise.all([
     fetchSupadataTranscript(url),
+    resolveVideoTitle(url),
   ])
-
-  const videoTitle = metadata.title?.trim() || "Видео без названия"
 
   if ("jobId" in transcriptResponse) {
     return {
@@ -162,8 +160,7 @@ export async function pollVideoSummary(
     throw new ExternalServiceError("Supadata вернул пустой транскрипт.", 502)
   }
 
-  const videoTitle =
-    request.videoTitle || (await fetchSupadataMetadata(url)).title?.trim() || "Видео без названия"
+  const videoTitle = request.videoTitle || (await resolveVideoTitle(url))
 
   return createCompletedSummary({
     transcript: jobResult.content,
@@ -210,6 +207,29 @@ async function fetchSupadataMetadata(url: string): Promise<SupadataMetadataRespo
     timeoutMs: SUPADATA_METADATA_TIMEOUT_MS,
   })
   return payload
+}
+
+async function resolveVideoTitle(url: string): Promise<string> {
+  const metadata = await fetchSupadataMetadataSafely(url)
+  return metadata?.title?.trim() || "Видео без названия"
+}
+
+async function fetchSupadataMetadataSafely(url: string): Promise<SupadataMetadataResponse | null> {
+  try {
+    return await fetchSupadataMetadata(url)
+  } catch (error) {
+    if (!isExternalServiceError(error)) {
+      throw error
+    }
+
+    console.warn("Supadata metadata request failed; using fallback title", {
+      message: error.message,
+      statusCode: error.statusCode,
+      url,
+    })
+
+    return null
+  }
 }
 
 async function fetchSupadataTranscript(url: string): Promise<SupadataTranscriptResponse> {
@@ -369,7 +389,10 @@ async function parseJsonResponse<T>(response: Response, serviceName: string): Pr
   const payload = rawText ? tryParseJson(rawText) : null
 
   if (!response.ok) {
-    const message = extractErrorMessage(payload) || `${serviceName} вернул ошибку ${response.status}.`
+    const message =
+      response.status === 429
+        ? `${serviceName} временно ограничил запросы. Попробуйте еще раз через минуту.`
+        : extractErrorMessage(payload) || `${serviceName} вернул ошибку ${response.status}.`
     throw new ExternalServiceError(message, response.status >= 400 && response.status < 600 ? response.status : 502)
   }
 
