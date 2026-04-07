@@ -23,6 +23,7 @@ const SUPADATA_TRANSCRIPT_INITIAL_RETRY_ATTEMPTS = 1
 const SUPADATA_TRANSCRIPT_POLL_RETRY_ATTEMPTS = 0
 const GEMINI_RETRY_ATTEMPTS = 1
 const RETRY_DELAY_MS = 750
+const SUPADATA_MIN_INTERVAL_MS = 1_000
 const MAX_URL_LENGTH = 2_000
 const MAX_JOB_ID_LENGTH = 256
 const MAX_STORYBOARD_SHEETS = 8
@@ -86,6 +87,8 @@ type SupadataApiResponse<T> = {
 }
 
 let geminiClient: GoogleGenAI | null = null
+let supadataNextAttemptAt = 0
+let supadataAttemptReservation: Promise<void> = Promise.resolve()
 
 class ExternalServiceError extends Error {
   statusCode: number
@@ -843,6 +846,10 @@ async function fetchWithRetry(
     const timeoutId = setTimeout(() => controller.abort(), timeoutMs)
 
     try {
+      if (serviceName === "Supadata") {
+        await reserveSupadataAttemptSlot()
+      }
+
       const response = await fetch(input, {
         ...requestInit,
         signal: controller.signal,
@@ -1410,6 +1417,32 @@ function getRetryDelay(attempt: number, response?: Response): number {
   }
 
   return RETRY_DELAY_MS * (attempt + 1)
+}
+
+async function reserveSupadataAttemptSlot(): Promise<void> {
+  const previousReservation = supadataAttemptReservation
+  let releaseReservation!: () => void
+
+  supadataAttemptReservation = new Promise((resolve) => {
+    releaseReservation = resolve
+  })
+
+  await previousReservation
+
+  let waitMs = 0
+
+  try {
+    const now = Date.now()
+    const attemptAt = Math.max(now, supadataNextAttemptAt)
+    supadataNextAttemptAt = attemptAt + SUPADATA_MIN_INTERVAL_MS
+    waitMs = attemptAt - now
+  } finally {
+    releaseReservation()
+  }
+
+  if (waitMs > 0) {
+    await wait(waitMs)
+  }
 }
 
 function parseRetryAfter(value: string | null): number | null {
