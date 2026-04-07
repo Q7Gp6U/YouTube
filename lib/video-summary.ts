@@ -9,6 +9,7 @@ import type {
 
 const SUPADATA_BASE_URL = "https://api.supadata.ai/v1"
 const GEMINI_MODEL = "gemini-3.1-flash-lite-preview"
+const PROCESSING_VIDEO_TITLE = "Видео обрабатывается"
 const MAX_TRANSCRIPT_CHARACTERS = 60_000
 const CHUNK_SIZE = 12_000
 const SUPADATA_METADATA_TIMEOUT_MS = 5_000
@@ -19,7 +20,7 @@ const YOUTUBE_STORYBOARD_RETRY_ATTEMPTS = 0
 const GEMINI_TIMEOUT_MS = 18_000
 const SUPADATA_METADATA_RETRY_ATTEMPTS = 0
 const SUPADATA_TRANSCRIPT_INITIAL_RETRY_ATTEMPTS = 1
-const SUPADATA_TRANSCRIPT_POLL_RETRY_ATTEMPTS = 2
+const SUPADATA_TRANSCRIPT_POLL_RETRY_ATTEMPTS = 0
 const GEMINI_RETRY_ATTEMPTS = 1
 const RETRY_DELAY_MS = 750
 const MAX_URL_LENGTH = 2_000
@@ -138,19 +139,17 @@ export async function startVideoSummary(
   rawUrl: string,
 ): Promise<SummaryCompletedResponse | SummaryProcessingResponse> {
   const url = normalizeYouTubeUrl(rawUrl)
-
-  const [transcriptResponse, videoTitle] = await Promise.all([
-    fetchSupadataTranscript(url),
-    resolveVideoTitle(url),
-  ])
+  const transcriptResponse = await fetchSupadataTranscript(url)
 
   if ("jobId" in transcriptResponse) {
     return {
       status: "processing",
       jobId: transcriptResponse.jobId,
-      videoTitle,
+      videoTitle: PROCESSING_VIDEO_TITLE,
     }
   }
+
+  const videoTitle = await resolveVideoTitle(url)
 
   return createCompletedSummary({
     url,
@@ -171,7 +170,7 @@ export async function pollVideoSummary(
     return {
       status: "processing",
       jobId,
-      videoTitle: request.videoTitle || "Видео обрабатывается",
+      videoTitle: request.videoTitle || PROCESSING_VIDEO_TITLE,
     }
   }
 
@@ -188,7 +187,7 @@ export async function pollVideoSummary(
     throw new ExternalServiceError("Supadata вернул пустой транскрипт.", 502)
   }
 
-  const videoTitle = request.videoTitle || (await resolveVideoTitle(url))
+  const videoTitle = shouldResolveVideoTitle(request.videoTitle) ? await resolveVideoTitle(url) : request.videoTitle
 
   return createCompletedSummary({
     url,
@@ -685,6 +684,7 @@ async function fetchSupadata<T>(
     serviceName: "Supadata",
     timeoutMs: requestOptions.timeoutMs,
     retries: requestOptions.retries,
+    retryOnRateLimit: false,
   })
 
   return {
@@ -832,9 +832,10 @@ async function fetchWithRetry(
     retries: number
     serviceName: string
     timeoutMs: number
+    retryOnRateLimit?: boolean
   },
 ): Promise<Response> {
-  const { retries, serviceName, timeoutMs, ...requestInit } = init
+  const { retries, serviceName, timeoutMs, retryOnRateLimit = true, ...requestInit } = init
   let lastError: unknown
 
   for (let attempt = 0; attempt <= retries; attempt += 1) {
@@ -849,7 +850,7 @@ async function fetchWithRetry(
 
       clearTimeout(timeoutId)
 
-      if (!shouldRetryResponse(response.status) || attempt === retries) {
+      if (!shouldRetryResponse(response.status, retryOnRateLimit) || attempt === retries) {
         return response
       }
 
@@ -1286,8 +1287,12 @@ function getRequiredEnv(name: "SUPADATA_API_KEY" | "GEMINI_API_KEY"): string {
   return value
 }
 
-function shouldRetryResponse(status: number): boolean {
-  return status === 408 || status === 409 || status === 425 || status === 429 || status >= 500
+function shouldRetryResponse(status: number, retryOnRateLimit = true): boolean {
+  return status === 408 || status === 409 || status === 425 || (retryOnRateLimit && status === 429) || status >= 500
+}
+
+function shouldResolveVideoTitle(videoTitle?: string): boolean {
+  return !videoTitle || videoTitle === PROCESSING_VIDEO_TITLE
 }
 
 function isRetryableFetchError(error: unknown): boolean {

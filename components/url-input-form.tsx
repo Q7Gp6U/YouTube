@@ -1,28 +1,43 @@
 "use client"
 
-import { useState, type FormEvent } from "react"
+import { useEffect, useRef, useState, type FormEvent } from "react"
 import { ArrowRight, Play } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 
 interface UrlInputFormProps {
-  onSubmit: (url: string) => void
+  onSubmit: (url: string) => Promise<void> | void
   isLoading?: boolean
 }
 
 export function UrlInputForm({ onSubmit, isLoading }: UrlInputFormProps) {
   const [url, setUrl] = useState("")
   const [isFocused, setIsFocused] = useState(false)
+  const submitLockRef = useRef(false)
 
-  const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
+  useEffect(() => {
+    if (!isLoading) {
+      submitLockRef.current = false
+    }
+  }, [isLoading])
+
+  const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
 
-    if (!url.trim()) {
+    const normalizedUrl = url.trim()
+
+    if (!normalizedUrl || submitLockRef.current || isLoading) {
       return
     }
 
-    onSubmit(url.trim())
+    submitLockRef.current = true
+
+    try {
+      await onSubmit(normalizedUrl)
+    } finally {
+      submitLockRef.current = false
+    }
   }
 
   return (

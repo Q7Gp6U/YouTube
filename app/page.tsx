@@ -33,8 +33,8 @@ type InfoItem = {
   description: string
 }
 
-const MAX_POLL_ATTEMPTS = 18
-const POLL_INTERVAL_STEPS_MS = [2500, 4000, 6000, 8000, 10000]
+const MAX_POLL_ATTEMPTS = 12
+const POLL_INTERVAL_STEPS_MS = [4000, 6500, 9000, 12000]
 const INFO_PANEL_COPY: Record<InfoPanelKey, { eyebrow: string; title: string; description: string }> = {
   "how-it-works": {
     eyebrow: "Как это работает",
@@ -115,6 +115,7 @@ export default function Home() {
 
   const abortControllerRef = useRef<AbortController | null>(null)
   const activeRequestIdRef = useRef(0)
+  const inFlightUrlRef = useRef<string | null>(null)
   const videoThumbnailUrls = useMemo(() => getYouTubeThumbnailUrls(submittedUrl), [submittedUrl])
 
   useEffect(() => {
@@ -124,7 +125,12 @@ export default function Home() {
   }, [])
 
   const handleSubmit = async (url: string) => {
+    if (inFlightUrlRef.current === url) {
+      return
+    }
+
     abortActiveRequest(abortControllerRef)
+    inFlightUrlRef.current = url
 
     const controller = new AbortController()
     abortControllerRef.current = controller
@@ -170,6 +176,10 @@ export default function Home() {
       setAppState("idle")
       setErrorMessage(getErrorMessage(error))
     } finally {
+      if (inFlightUrlRef.current === url) {
+        inFlightUrlRef.current = null
+      }
+
       if (abortControllerRef.current === controller) {
         abortControllerRef.current = null
       }
@@ -178,6 +188,7 @@ export default function Home() {
 
   const handleReset = () => {
     abortActiveRequest(abortControllerRef)
+    inFlightUrlRef.current = null
     setAppState("idle")
     setSummary("")
     setVideoTitle("")
