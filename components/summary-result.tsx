@@ -1,7 +1,7 @@
 "use client"
 
 import { useEffect, useRef, useState } from "react"
-import { Check, Copy, Play, RotateCcw, Square, Volume2 } from "lucide-react"
+import { Check, Copy, ImageOff, Play, RotateCcw, Square, Volume2 } from "lucide-react"
 
 import { AspectRatio } from "@/components/ui/aspect-ratio"
 import { Button } from "@/components/ui/button"
@@ -20,15 +20,20 @@ export function SummaryResult({ summary, videoTitle, essenceFrame, thumbnailUrls
   const [copyError, setCopyError] = useState("")
   const [isSpeaking, setIsSpeaking] = useState(false)
   const [speechError, setSpeechError] = useState("")
+  const [speechSupported, setSpeechSupported] = useState(false)
   const [thumbnailIndex, setThumbnailIndex] = useState(0)
+  const [thumbnailUnavailable, setThumbnailUnavailable] = useState(false)
   const [hasEssenceFrameError, setHasEssenceFrameError] = useState(false)
   const utteranceRef = useRef<SpeechSynthesisUtterance | null>(null)
 
   const activeThumbnailUrl = thumbnailUrls[thumbnailIndex]
   const shouldShowEssenceFrame = Boolean(essenceFrame && !hasEssenceFrameError)
+  const shouldShowThumbnail = Boolean(activeThumbnailUrl) && !thumbnailUnavailable
+  const hasVisualPreview = shouldShowEssenceFrame || shouldShowThumbnail
 
   useEffect(() => {
     setThumbnailIndex(0)
+    setThumbnailUnavailable(false)
   }, [thumbnailUrls])
 
   useEffect(() => {
@@ -41,6 +46,14 @@ export function SummaryResult({ summary, videoTitle, essenceFrame, thumbnailUrls
         window.speechSynthesis.cancel()
       }
     }
+  }, [])
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return
+    }
+
+    setSpeechSupported("speechSynthesis" in window)
   }, [])
 
   const handleCopy = async () => {
@@ -101,6 +114,7 @@ export function SummaryResult({ summary, videoTitle, essenceFrame, thumbnailUrls
   const handleThumbnailError = () => {
     setThumbnailIndex((currentIndex) => {
       if (currentIndex >= thumbnailUrls.length - 1) {
+        setThumbnailUnavailable(true)
         return currentIndex
       }
 
@@ -117,44 +131,112 @@ export function SummaryResult({ summary, videoTitle, essenceFrame, thumbnailUrls
         <h2 className="text-xl font-semibold text-foreground">Готово!</h2>
       </div>
 
-      <div className="mb-4 overflow-hidden rounded-2xl border border-border bg-card shadow-lg">
-        {shouldShowEssenceFrame && essenceFrame ? (
-          <AspectRatio ratio={essenceFrame.frameWidth / essenceFrame.frameHeight}>
-            <div className="relative h-full w-full overflow-hidden bg-secondary" role="img" aria-label={`Кадр по сути видео ${videoTitle}`}>
-              <img
-                src={essenceFrame.sheetUrl}
-                alt=""
-                aria-hidden="true"
-                className="pointer-events-none absolute left-0 top-0 block max-w-none select-none"
-                loading="eager"
-                onError={() => setHasEssenceFrameError(true)}
-                style={{
-                  width: `${essenceFrame.columns * 100}%`,
-                  height: `${essenceFrame.rows * 100}%`,
-                  transform: `translate(-${(essenceFrame.column * 100) / essenceFrame.columns}%, -${(essenceFrame.row * 100) / essenceFrame.rows}%)`,
-                }}
-              />
-
-              <div className="absolute bottom-3 right-3 rounded-full bg-background/80 px-3 py-1 text-xs font-medium text-foreground backdrop-blur">
-                {formatTimestamp(essenceFrame.timestampMs)}
-              </div>
+      <div className="mb-6 grid gap-4 lg:grid-cols-[minmax(0,1.2fr)_minmax(18rem,0.8fr)]">
+        <div className="overflow-hidden rounded-2xl border border-border bg-card shadow-lg">
+          <div className="flex items-center justify-between gap-3 border-b border-border px-4 py-3">
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-[0.25em] text-primary">Кадр по сути</p>
+              <p className="mt-1 text-sm text-muted-foreground">
+                {shouldShowEssenceFrame
+                  ? "Показываем кадр, где видео, похоже, наконец перешло к делу."
+                  : shouldShowThumbnail
+                    ? "Если точный кадр не доехал, берем превью и не драматизируем."
+                    : "Сегодня без картинки: либо YouTube зажал превью, либо кадр решил быть загадкой."}
+              </p>
             </div>
-          </AspectRatio>
-        ) : activeThumbnailUrl ? (
-          <AspectRatio ratio={16 / 9}>
-            <img
-              src={activeThumbnailUrl}
-              alt={`Превью видео ${videoTitle}`}
-              className="h-full w-full object-cover"
-              loading="eager"
-              onError={handleThumbnailError}
-            />
-          </AspectRatio>
-        ) : null}
+            <div className="flex items-center gap-2 rounded-full bg-secondary px-3 py-1 text-xs font-medium text-foreground">
+              <Play className="h-3.5 w-3.5 fill-primary text-primary" />
+              <span className="max-w-32 truncate sm:max-w-48">{videoTitle}</span>
+            </div>
+          </div>
 
-        <div className="flex items-center gap-2 px-4 py-3">
-          <Play className="h-4 w-4 fill-primary text-primary" />
-          <p className="truncate text-sm font-medium text-foreground">{videoTitle}</p>
+          {shouldShowEssenceFrame && essenceFrame ? (
+            <AspectRatio ratio={essenceFrame.frameWidth / essenceFrame.frameHeight}>
+              <div className="relative h-full w-full overflow-hidden bg-secondary" role="img" aria-label={`Кадр по сути видео ${videoTitle}`}>
+                <img
+                  src={essenceFrame.sheetUrl}
+                  alt=""
+                  aria-hidden="true"
+                  className="pointer-events-none absolute left-0 top-0 block max-w-none select-none"
+                  loading="eager"
+                  onError={() => setHasEssenceFrameError(true)}
+                  style={{
+                    width: `${essenceFrame.columns * 100}%`,
+                    height: `${essenceFrame.rows * 100}%`,
+                    transform: `translate(-${(essenceFrame.column * 100) / essenceFrame.columns}%, -${(essenceFrame.row * 100) / essenceFrame.rows}%)`,
+                  }}
+                />
+
+                <div className="absolute bottom-3 right-3 rounded-full bg-background/80 px-3 py-1 text-xs font-medium text-foreground backdrop-blur">
+                  {formatTimestamp(essenceFrame.timestampMs)}
+                </div>
+              </div>
+            </AspectRatio>
+          ) : shouldShowThumbnail ? (
+            <AspectRatio ratio={16 / 9}>
+              <img
+                src={activeThumbnailUrl}
+                alt={`Превью видео ${videoTitle}`}
+                className="h-full w-full object-cover"
+                loading="eager"
+                onError={handleThumbnailError}
+              />
+            </AspectRatio>
+          ) : (
+            <div className="flex min-h-64 flex-col items-center justify-center gap-3 bg-secondary/60 px-6 py-10 text-center">
+              <div className="flex h-14 w-14 items-center justify-center rounded-full bg-background text-muted-foreground">
+                <ImageOff className="h-6 w-6" />
+              </div>
+              <p className="text-base font-medium text-foreground">Превью не поймалось</p>
+              <p className="max-w-sm text-sm leading-6 text-muted-foreground">
+                Смысл текста на месте, а вот картинка где-то задержалась. Это бывает, когда источник не отдает кадр
+                или превью недоступно.
+              </p>
+            </div>
+          )}
+        </div>
+
+        <div className="rounded-2xl border border-border bg-card p-5 shadow-lg">
+          <p className="text-xs font-semibold uppercase tracking-[0.25em] text-primary">Озвучка</p>
+          <h3 className="mt-2 text-lg font-semibold text-foreground">Прослушать описание</h3>
+          <p className="mt-2 text-sm leading-6 text-muted-foreground">
+            Кнопка ниже запускает системный синтез речи браузера. Если браузер упрямится, честно сообщаем об этом,
+            а текст никуда не девается.
+          </p>
+
+          <Button
+            variant={speechSupported ? "default" : "secondary"}
+            size="lg"
+            onClick={handleSpeakToggle}
+            disabled={!speechSupported}
+            className="mt-5 h-12 w-full gap-2"
+          >
+            {isSpeaking ? (
+              <>
+                <Square className="h-4 w-4" />
+                <span>Остановить озвучку</span>
+              </>
+            ) : (
+              <>
+                <Volume2 className="h-4 w-4" />
+                <span>Прослушать описание</span>
+              </>
+            )}
+          </Button>
+
+          <div className="mt-4 rounded-xl bg-secondary/70 px-4 py-3 text-sm text-muted-foreground">
+            {speechSupported
+              ? isSpeaking
+                ? "Сейчас браузер читает выжимку вслух. Да, теперь он тоже в курсе сути ролика."
+                : "Озвучка доступна. Если хочется просто забрать текст, копирование по-прежнему рядом."
+              : "В этом браузере синтез речи не поддерживается. Текст можно скопировать или прочитать прямо здесь."}
+          </div>
+
+          {!hasVisualPreview && (
+            <div className="mt-4 rounded-xl border border-dashed border-border px-4 py-3 text-sm text-muted-foreground">
+              Без картинки тоже работаем: выжимка уже готова и не зависит от того, согласился ли кадр показаться.
+            </div>
+          )}
         </div>
       </div>
 
@@ -188,7 +270,8 @@ export function SummaryResult({ summary, videoTitle, essenceFrame, thumbnailUrls
               variant="ghost"
               size="sm"
               onClick={handleSpeakToggle}
-              className="h-9 gap-2 text-muted-foreground hover:bg-secondary hover:text-foreground"
+              disabled={!speechSupported}
+              className="h-9 gap-2 text-muted-foreground hover:bg-secondary hover:text-foreground disabled:cursor-not-allowed disabled:opacity-70"
             >
               {isSpeaking ? (
                 <>

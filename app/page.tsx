@@ -1,7 +1,7 @@
 "use client"
 
 import { startTransition, useEffect, useMemo, useRef, useState, type ElementType, type MutableRefObject } from "react"
-import { Gift, Play, Target, Zap } from "lucide-react"
+import { Gift, Play, Sparkles, Target, Zap } from "lucide-react"
 
 import { Logo } from "@/components/logo"
 import { SummaryResult } from "@/components/summary-result"
@@ -180,9 +180,9 @@ export default function Home() {
         </div>
       </header>
 
-      <main className="flex flex-1 flex-col items-center justify-center px-4 py-16">
+      <main className="flex flex-1 flex-col items-center px-4 py-16">
         {(appState === "idle" || appState === "loading") && (
-          <div className="flex w-full max-w-3xl flex-col items-center gap-10 animate-fade-in-up">
+          <div className="flex min-h-[calc(100vh-18rem)] w-full max-w-3xl flex-col items-center justify-center gap-10 animate-fade-in-up">
             <div className="rounded-full border border-primary/20 bg-primary/10 px-4 py-2">
               <div className="flex items-center gap-2">
                 <Play className="h-4 w-4 fill-primary text-primary" />
@@ -230,12 +230,6 @@ export default function Home() {
                 <ThinkingAnimation statusText={loadingStatus} hintText={loadingHint} />
               </div>
             )}
-
-            <div id="what-you-get" className="mt-8 grid w-full max-w-2xl grid-cols-1 gap-6 sm:grid-cols-3">
-              <FeatureCard icon={Zap} title="Быстро" description="Результат за 10 секунд" />
-              <FeatureCard icon={Target} title="Точно" description="ИИ выделяет главное" />
-              <FeatureCard icon={Gift} title="Бесплатно" description="Без регистрации" />
-            </div>
           </div>
         )}
 
@@ -248,13 +242,68 @@ export default function Home() {
             onReset={handleReset}
           />
         )}
+
+        <div className="mt-20 flex w-full max-w-5xl flex-col gap-8">
+          <section
+            id="how-it-works"
+            className="rounded-[2rem] border border-border bg-card/70 px-6 py-8 shadow-sm sm:px-8"
+          >
+            <div className="max-w-2xl">
+              <p className="text-sm font-semibold uppercase tracking-[0.25em] text-primary">Как это работает</p>
+              <h2 className="mt-3 text-3xl font-bold tracking-tight text-foreground sm:text-4xl">
+                Никакой магии. Просто очень деловой ИИ, которому показали YouTube.
+              </h2>
+              <p className="mt-4 text-base leading-7 text-muted-foreground">
+                Сервис вытаскивает транскрипт, вылавливает главное и возвращает короткую выжимку без обязательного
+                просмотра вступления, рекламы и философской паузы на три минуты.
+              </p>
+            </div>
+
+            <div className="mt-8 grid gap-4 md:grid-cols-3">
+              <StepCard
+                step="01"
+                title="Берем ссылку"
+                description="Проверяем, что это YouTube, а не очередной квест с неожиданным сюжетом."
+              />
+              <StepCard
+                step="02"
+                title="Слушаем вместо вас"
+                description="Supadata собирает транскрипт, а модель без жалости вырезает словесные круги почета."
+              />
+              <StepCard
+                step="03"
+                title="Отдаем суть"
+                description="На выходе - понятный текст, кадр по делу и кнопка озвучки, если браузер не вредничает."
+              />
+            </div>
+          </section>
+
+          <section
+            id="what-you-get"
+            className="rounded-[2rem] border border-border bg-card/50 px-6 py-8 shadow-sm sm:px-8"
+          >
+            <div className="max-w-2xl">
+              <p className="text-sm font-semibold uppercase tracking-[0.25em] text-primary">Что внутри</p>
+              <h2 className="mt-3 text-3xl font-bold tracking-tight text-foreground sm:text-4xl">
+                Все, что нужно для быстрого знакомства с видео, без лишнего театра.
+              </h2>
+              <p className="mt-4 text-base leading-7 text-muted-foreground">
+                Здесь не пытаются заменить весь ролик. Здесь честно показывают, что в нем главное, и экономят вам
+                время, нервы и пару ненужных мотивационных абзацев.
+              </p>
+            </div>
+
+            <div className="mt-8 grid grid-cols-1 gap-6 sm:grid-cols-3">
+              <FeatureCard icon={Zap} title="Быстро" description="Результат приходит без долгого ритуала обновления страницы." />
+              <FeatureCard icon={Target} title="Точно" description="Модель собирает главное, а не коллекцию случайных фраз из середины ролика." />
+              <FeatureCard icon={Gift} title="Бесплатно" description="Без регистрации, подписки и драматичной кнопки 'начать пробный период'." />
+            </div>
+          </section>
+        </div>
       </main>
 
       <footer className="border-t border-border bg-card/30 py-6">
-        <div
-          id="how-it-works"
-          className="mx-auto flex max-w-5xl flex-col items-center justify-between gap-4 px-4 text-sm text-muted-foreground sm:flex-row"
-        >
+        <div className="mx-auto flex max-w-5xl flex-col items-center justify-between gap-4 px-4 text-sm text-muted-foreground sm:flex-row">
           <p>© 2024 Кратко и точка. Все права защищены.</p>
           <div className="flex items-center gap-4">
             <span>Supadata для транскрипта</span>
@@ -412,6 +461,31 @@ function FeatureCard({
       </div>
       <h3 className="font-semibold text-foreground">{title}</h3>
       <p className="text-center text-sm text-muted-foreground">{description}</p>
+    </div>
+  )
+}
+
+function StepCard({
+  step,
+  title,
+  description,
+}: {
+  step: string
+  title: string
+  description: string
+}) {
+  return (
+    <div className="rounded-2xl border border-border bg-background/80 p-5 shadow-sm">
+      <div className="flex items-center gap-3">
+        <div className="flex h-10 w-10 items-center justify-center rounded-full bg-primary/10 text-sm font-semibold text-primary">
+          {step}
+        </div>
+        <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-secondary text-primary">
+          <Sparkles className="h-5 w-5" />
+        </div>
+      </div>
+      <h3 className="mt-4 text-lg font-semibold text-foreground">{title}</h3>
+      <p className="mt-2 text-sm leading-6 text-muted-foreground">{description}</p>
     </div>
   )
 }
