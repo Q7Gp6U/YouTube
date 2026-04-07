@@ -39,3 +39,5 @@
  GET / 200 in 33ms (next.js: 1824µs, application-code: 31ms)
  GET / 200 in 35ms (next.js: 2ms, application-code: 33ms)
  GET / 200 in 39ms (next.js: 2ms, application-code: 37ms)
+ GET / 200 in 1091ms (next.js: 922ms, application-code: 169ms)
+  Reload env: .env.local

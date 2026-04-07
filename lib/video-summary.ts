@@ -703,34 +703,50 @@ async function summarizeTranscript({
   const preparedTranscript = trimTranscript(transcript)
   const transcriptChunks = splitTranscript(preparedTranscript, CHUNK_SIZE)
 
-  if (transcriptChunks.length === 1) {
-    return callGemini({
-      prompt: buildSinglePrompt(videoTitle, transcriptChunks[0]),
+  try {
+    if (transcriptChunks.length === 1) {
+      return await callGemini({
+        prompt: buildSinglePrompt(videoTitle, transcriptChunks[0]),
+        maxOutputTokens: 500,
+      })
+    }
+
+    const chunkSummaries: string[] = []
+    let resolvedModel = GEMINI_MODEL
+
+    for (const [index, chunk] of transcriptChunks.entries()) {
+      const partial = await callGemini({
+        prompt: buildChunkPrompt(videoTitle, chunk, index + 1, transcriptChunks.length),
+        maxOutputTokens: 350,
+      })
+
+      chunkSummaries.push(partial.summary)
+      resolvedModel = partial.model
+    }
+
+    const combined = await callGemini({
+      prompt: buildCombinePrompt(videoTitle, chunkSummaries),
       maxOutputTokens: 500,
     })
-  }
 
-  const chunkSummaries: string[] = []
-  let resolvedModel = GEMINI_MODEL
+    return {
+      summary: combined.summary,
+      model: combined.model || resolvedModel,
+    }
+  } catch (error) {
+    if (!isTransientGeminiSummaryError(error)) {
+      throw error
+    }
 
-  for (const [index, chunk] of transcriptChunks.entries()) {
-    const partial = await callGemini({
-      prompt: buildChunkPrompt(videoTitle, chunk, index + 1, transcriptChunks.length),
-      maxOutputTokens: 350,
+    console.warn("Gemini summary request failed; using extractive fallback", {
+      error: error instanceof Error ? error.message : String(error),
+      videoTitle,
     })
 
-    chunkSummaries.push(partial.summary)
-    resolvedModel = partial.model
-  }
-
-  const combined = await callGemini({
-    prompt: buildCombinePrompt(videoTitle, chunkSummaries),
-    maxOutputTokens: 500,
-  })
-
-  return {
-    summary: combined.summary,
-    model: combined.model || resolvedModel,
+    return {
+      summary: buildTranscriptFallbackSummary(preparedTranscript),
+      model: "fallback-extractive",
+    }
   }
 }
 
@@ -966,6 +982,138 @@ function ensureRussianSummary(summary: string): string {
   throw new ExternalServiceError("Gemini вернул ответ не на русском языке.", 502)
 }
 
+function buildTranscriptFallbackSummary(transcript: string): string {
+  const normalized = transcript.replace(/\s+/g, " ").trim()
+  const fragments = extractTranscriptFragments(normalized)
+  const bulletCount = Math.min(Math.max(fragments.length, 4), 6)
+  const selectedFragments = ensureFallbackBulletCount(
+    selectEvenly(fragments, bulletCount).map((fragment) => finalizeFallbackFragment(fragment)),
+  )
+
+  const briefSource = selectedFragments.slice(0, 2).join(" ") || finalizeFallbackFragment(normalized.slice(0, 260))
+  const conclusionSource = selectedFragments[selectedFragments.length - 1] || briefSource
+
+  return [
+    `Кратко: ${limitSentence(briefSource, 260)}`,
+    "",
+    "Главное:",
+    ...selectedFragments.map((fragment) => `- ${fragment}`),
+    "",
+    `Вывод: ${limitSentence(`В видео последовательно раскрывается тема через ключевые тезисы и примеры: ${conclusionSource}`, 220)}`,
+  ].join("\n")
+}
+
+function extractTranscriptFragments(transcript: string): string[] {
+  const segments = transcript
+    .split(/(?<=[.!?])\s+|\n+/)
+    .map((segment) => segment.replace(/\s+/g, " ").trim())
+    .filter((segment) => segment.length >= 30)
+
+  const uniqueSegments: string[] = []
+  const seen = new Set<string>()
+
+  for (const segment of segments) {
+    const normalized = segment.toLowerCase()
+
+    if (seen.has(normalized)) {
+      continue
+    }
+
+    seen.add(normalized)
+    uniqueSegments.push(segment)
+
+    if (uniqueSegments.length >= 12) {
+      break
+    }
+  }
+
+  if (uniqueSegments.length >= 4) {
+    return uniqueSegments
+  }
+
+  const fallbackSegments = transcript
+    .split(/[,;:\-]\s+|\n+/)
+    .map((segment) => segment.replace(/\s+/g, " ").trim())
+    .filter((segment) => segment.length >= 24)
+
+  for (const segment of fallbackSegments) {
+    const normalized = segment.toLowerCase()
+
+    if (seen.has(normalized)) {
+      continue
+    }
+
+    seen.add(normalized)
+    uniqueSegments.push(segment)
+
+    if (uniqueSegments.length >= 8) {
+      break
+    }
+  }
+
+  return uniqueSegments.length > 0 ? uniqueSegments : [transcript.slice(0, 320).trim()]
+}
+
+function selectEvenly(values: string[], count: number): string[] {
+  if (values.length <= count) {
+    return values
+  }
+
+  const indexes = sampleIndexes(values.length, count)
+  return indexes.map((index) => values[index])
+}
+
+function finalizeFallbackFragment(fragment: string): string {
+  const compact = fragment.replace(/\s+/g, " ").replace(/^[\-•\d.\s]+/, "").trim()
+
+  if (!compact) {
+    return "Смысл видео считывается по нескольким связанным тезисам."
+  }
+
+  const limited = limitSentence(compact, 180)
+  return /[.!?…]$/.test(limited) ? limited : `${limited}.`
+}
+
+function ensureFallbackBulletCount(fragments: string[]): string[] {
+  const normalized = fragments.filter(Boolean)
+
+  if (normalized.length >= 4) {
+    return normalized.slice(0, 6)
+  }
+
+  const padded = [...normalized]
+  const genericFallbacks = [
+    "В центре внимания остается основная тема видео без заметного ухода в сторону.",
+    "Ключевые мысли развиваются последовательно и поддерживают общий смысл рассказа.",
+    "Повторы и детали работают как пояснения к главным тезисам, а не как отдельная линия.",
+    "Даже при шумном фрагменте общий ход повествования остается читаемым и связным.",
+  ]
+
+  for (const fallback of genericFallbacks) {
+    if (padded.length >= 4) {
+      break
+    }
+
+    padded.push(fallback)
+  }
+
+  return padded.slice(0, 6)
+}
+
+function limitSentence(value: string, maxLength: number): string {
+  const normalized = value.replace(/\s+/g, " ").trim()
+
+  if (normalized.length <= maxLength) {
+    return normalized
+  }
+
+  const truncated = normalized.slice(0, maxLength).trim()
+  const lastSpaceIndex = truncated.lastIndexOf(" ")
+  const safeValue = lastSpaceIndex > 40 ? truncated.slice(0, lastSpaceIndex) : truncated
+
+  return `${safeValue.replace(/[.,;:!?…-]+$/, "").trim()}...`
+}
+
 function trimTranscript(transcript: string): string {
   const normalized = transcript
     .replace(/\r\n/g, "\n")
@@ -1173,6 +1321,21 @@ function isRetryableGeminiError(error: unknown): boolean {
   return status !== null ? shouldRetryResponse(status) : error instanceof TypeError
 }
 
+function isTransientGeminiSummaryError(error: unknown): boolean {
+  if (!(error instanceof ExternalServiceError)) {
+    return false
+  }
+
+  if (error.statusCode === 503 || error.statusCode === 504) {
+    return true
+  }
+
+  const message = error.message.toLowerCase()
+
+  return ["gemini не ответил вовремя", "temporarily unavailable", "unavailable", "deadline exceeded", "timed out"]
+    .some((fragment) => message.includes(fragment))
+}
+
 function createRequestError(serviceName: string, error: unknown): ExternalServiceError {
   if (error instanceof ExternalServiceError) {
     return error
@@ -1203,12 +1366,20 @@ function createGeminiRequestError(error: unknown): ExternalServiceError {
           : null
     const message = error.message.trim()
 
-    if (status && status >= 400 && status < 600 && message) {
-      return new ExternalServiceError(message, status)
+    if (status === 503 || status === 504) {
+      return new ExternalServiceError("Gemini временно недоступен. Используем резервную обработку.", status)
+    }
+
+    if (/deadline exceeded|timed out|temporarily unavailable|service unavailable|unavailable/i.test(message)) {
+      return new ExternalServiceError("Gemini временно недоступен. Используем резервную обработку.", 503)
+    }
+
+    if (status && status >= 400 && status < 600) {
+      return new ExternalServiceError(status === 429 ? "Gemini временно ограничил запросы." : "Gemini вернул ошибку при создании краткого содержания.", status)
     }
 
     if (message) {
-      return new ExternalServiceError(message, 502)
+      return new ExternalServiceError("Gemini вернул некорректный ответ при создании краткого содержания.", 502)
     }
   }
 
