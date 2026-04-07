@@ -271,9 +271,9 @@ export default function Home() {
         </div>
       </header>
 
-      <main className="flex flex-1 flex-col items-center px-4 py-16">
+      <main className="flex flex-1 flex-col items-center px-4 py-10 sm:py-12">
         {(appState === "idle" || appState === "loading") && (
-          <div className="flex min-h-[calc(100vh-18rem)] w-full max-w-3xl flex-col items-center justify-center gap-10 animate-fade-in-up">
+          <div className="flex min-h-[calc(100vh-10rem)] w-full max-w-5xl flex-col items-center justify-center gap-8 animate-fade-in-up">
             <div className="rounded-full border border-primary/20 bg-primary/10 px-4 py-2">
               <div className="flex items-center gap-2">
                 <Play className="h-4 w-4 fill-primary text-primary" />
@@ -316,6 +316,17 @@ export default function Home() {
               )}
             </div>
 
+            <div className="grid w-full max-w-4xl grid-cols-1 gap-5 pt-2 sm:grid-cols-3">
+              {WHAT_YOU_GET_FEATURES.map((feature) => (
+                <FeatureCard
+                  key={feature.title}
+                  icon={feature.icon}
+                  title={feature.title}
+                  description={feature.description}
+                />
+              ))}
+            </div>
+
             {appState === "loading" && (
               <div className="pt-2">
                 <ThinkingAnimation statusText={loadingStatus} hintText={loadingHint} />
@@ -332,21 +343,6 @@ export default function Home() {
             thumbnailUrls={videoThumbnailUrls}
             onReset={handleReset}
           />
-        )}
-
-        {(appState === "idle" || appState === "loading") && (
-          <section className="mt-20 w-full max-w-5xl rounded-[2rem] border border-border bg-card/50 px-6 py-8 shadow-sm sm:px-8">
-            <div className="grid grid-cols-1 gap-6 sm:grid-cols-3">
-              {WHAT_YOU_GET_FEATURES.map((feature) => (
-                <FeatureCard
-                  key={feature.title}
-                  icon={feature.icon}
-                  title={feature.title}
-                  description={feature.description}
-                />
-              ))}
-            </div>
-          </section>
         )}
 
         <Dialog open={activeInfoPanel !== null} onOpenChange={(open) => !open && setActiveInfoPanel(null)}>
@@ -512,12 +508,12 @@ function FeatureCard({
   description: string
 }) {
   return (
-    <div className="group flex flex-col items-center gap-3 rounded-2xl border border-border bg-card p-6 transition-all hover:border-primary/50">
-      <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-primary/10 transition-colors group-hover:bg-primary/20">
+    <div className="group flex min-h-44 flex-col items-center gap-3 rounded-[1.75rem] border border-border/80 bg-card/95 p-6 text-center shadow-[0_0_24px_rgba(255,0,0,0.06)] transition-all duration-300 hover:-translate-y-1 hover:border-primary/50 hover:shadow-[0_0_34px_rgba(255,0,0,0.14)]">
+      <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-primary/10 shadow-[0_0_20px_rgba(255,0,0,0.18)] transition-all duration-300 group-hover:scale-105 group-hover:bg-primary/20 group-hover:shadow-[0_0_28px_rgba(255,0,0,0.28)] animate-float">
         <Icon className="h-6 w-6 text-primary" />
       </div>
-      <h3 className="font-semibold text-foreground">{title}</h3>
-      <p className="text-center text-sm text-muted-foreground">{description}</p>
+      <h3 className="pt-1 text-xl font-semibold text-foreground">{title}</h3>
+      <p className="max-w-xs text-sm leading-6 text-muted-foreground">{description}</p>
     </div>
   )
 }
