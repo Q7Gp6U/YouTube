@@ -1,7 +1,7 @@
 "use client"
 
 import { startTransition, useEffect, useMemo, useRef, useState, type ElementType, type MutableRefObject } from "react"
-import { ArrowLeft, Gift, Play, Sparkles, Target, X, Zap } from "lucide-react"
+import { FileText, Gift, Image, Play, Sparkles, Target, Volume2, X, Zap } from "lucide-react"
 
 import { Logo } from "@/components/logo"
 import { SummaryResult } from "@/components/summary-result"
@@ -23,6 +23,11 @@ type StepItem = {
   description: string
 }
 type FeatureItem = {
+  icon: ElementType
+  title: string
+  description: string
+}
+type InfoItem = {
   icon: ElementType
   title: string
   description: string
@@ -76,6 +81,23 @@ const WHAT_YOU_GET_FEATURES: FeatureItem[] = [
     icon: Gift,
     title: "Бесплатно",
     description: "Без регистрации, подписки и драматичной кнопки 'начать пробный период'.",
+  },
+]
+const WHAT_IS_INSIDE_ITEMS: InfoItem[] = [
+  {
+    icon: FileText,
+    title: "Краткая выжимка",
+    description: "Короткий итог по ролику без вступительных кругов, рекламных пауз и лишней воды.",
+  },
+  {
+    icon: Image,
+    title: "Кадр по сути",
+    description: "Нужный визуальный момент из видео, чтобы сразу понять, где в ролике начинается полезное.",
+  },
+  {
+    icon: Volume2,
+    title: "Озвучка текста",
+    description: "Готовую выжимку можно прослушать в браузере, если устройство поддерживает синтез речи.",
   },
 ]
 
@@ -312,45 +334,9 @@ export default function Home() {
           />
         )}
 
-        <div className="mt-20 flex w-full max-w-5xl flex-col gap-8">
-          <section
-            id="how-it-works"
-            className="scroll-mt-28 rounded-[2rem] border border-border bg-card/70 px-6 py-8 shadow-sm sm:px-8"
-          >
-            <div className="max-w-2xl">
-              <p className="text-sm font-semibold uppercase tracking-[0.25em] text-primary">Как это работает</p>
-              <h2 className="mt-3 text-3xl font-bold tracking-tight text-foreground sm:text-4xl">
-                Никакой магии. Просто очень деловой ИИ, которому показали YouTube.
-              </h2>
-              <p className="mt-4 text-base leading-7 text-muted-foreground">
-                Сервис вытаскивает транскрипт, вылавливает главное и возвращает короткую выжимку без обязательного
-                просмотра вступления, рекламы и философской паузы на три минуты.
-              </p>
-            </div>
-
-            <div className="mt-8 grid gap-4 md:grid-cols-3">
-              {HOW_IT_WORKS_STEPS.map((step) => (
-                <StepCard key={step.step} step={step.step} title={step.title} description={step.description} />
-              ))}
-            </div>
-          </section>
-
-          <section
-            id="what-you-get"
-            className="scroll-mt-28 rounded-[2rem] border border-border bg-card/50 px-6 py-8 shadow-sm sm:px-8"
-          >
-            <div className="max-w-2xl">
-              <p className="text-sm font-semibold uppercase tracking-[0.25em] text-primary">Что внутри</p>
-              <h2 className="mt-3 text-3xl font-bold tracking-tight text-foreground sm:text-4xl">
-                Все, что нужно для быстрого знакомства с видео, без лишнего театра.
-              </h2>
-              <p className="mt-4 text-base leading-7 text-muted-foreground">
-                Здесь не пытаются заменить весь ролик. Здесь честно показывают, что в нем главное, и экономят вам
-                время, нервы и пару ненужных мотивационных абзацев.
-              </p>
-            </div>
-
-            <div className="mt-8 grid grid-cols-1 gap-6 sm:grid-cols-3">
+        {(appState === "idle" || appState === "loading") && (
+          <section className="mt-20 w-full max-w-5xl rounded-[2rem] border border-border bg-card/50 px-6 py-8 shadow-sm sm:px-8">
+            <div className="grid grid-cols-1 gap-6 sm:grid-cols-3">
               {WHAT_YOU_GET_FEATURES.map((feature) => (
                 <FeatureCard
                   key={feature.title}
@@ -361,7 +347,7 @@ export default function Home() {
               ))}
             </div>
           </section>
-        </div>
+        )}
 
         <Dialog open={activeInfoPanel !== null} onOpenChange={(open) => !open && setActiveInfoPanel(null)}>
           <DialogContent
@@ -536,6 +522,26 @@ function FeatureCard({
   )
 }
 
+function DetailCard({
+  icon: Icon,
+  title,
+  description,
+}: {
+  icon: ElementType
+  title: string
+  description: string
+}) {
+  return (
+    <div className="rounded-2xl border border-border bg-card/70 p-6 shadow-sm">
+      <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-primary/10 text-primary">
+        <Icon className="h-5 w-5" />
+      </div>
+      <h3 className="mt-4 text-lg font-semibold text-foreground">{title}</h3>
+      <p className="mt-2 text-sm leading-6 text-muted-foreground">{description}</p>
+    </div>
+  )
+}
+
 function InfoPanelDialog({
   panel,
   onClose,
@@ -548,20 +554,11 @@ function InfoPanelDialog({
   return (
     <div className="min-h-screen bg-background">
       <div className="sticky top-0 z-10 border-b border-border bg-background/95 backdrop-blur-sm">
-        <div className="mx-auto flex w-full max-w-5xl items-center justify-between gap-4 px-4 py-4 sm:px-6">
+        <div className="mx-auto flex w-full max-w-5xl justify-end px-4 py-4 sm:px-6">
           <button
             type="button"
             onClick={onClose}
-            className="inline-flex items-center gap-2 rounded-full border border-border bg-card px-4 py-2 text-sm font-medium text-foreground transition-colors hover:border-primary/50 hover:text-primary"
-          >
-            <ArrowLeft className="h-4 w-4" />
-            Назад
-          </button>
-
-          <button
-            type="button"
-            onClick={onClose}
-            className="inline-flex h-10 w-10 items-center justify-center rounded-full border border-border bg-card text-muted-foreground transition-colors hover:border-primary/50 hover:text-primary"
+            className="inline-flex h-11 w-11 items-center justify-center rounded-full border border-primary/50 bg-card text-primary shadow-[0_0_18px_rgba(255,0,0,0.38)] transition-all hover:scale-105 hover:shadow-[0_0_28px_rgba(255,0,0,0.58)]"
             aria-label="Закрыть раздел"
           >
             <X className="h-4 w-4" />
@@ -588,13 +585,8 @@ function InfoPanelDialog({
           </div>
         ) : (
           <div className="grid grid-cols-1 gap-6 sm:grid-cols-3">
-            {WHAT_YOU_GET_FEATURES.map((feature) => (
-              <FeatureCard
-                key={feature.title}
-                icon={feature.icon}
-                title={feature.title}
-                description={feature.description}
-              />
+            {WHAT_IS_INSIDE_ITEMS.map((item) => (
+              <DetailCard key={item.title} icon={item.icon} title={item.title} description={item.description} />
             ))}
           </div>
         )}
