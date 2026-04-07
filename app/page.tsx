@@ -1,11 +1,12 @@
 "use client"
 
 import { startTransition, useEffect, useMemo, useRef, useState, type ElementType, type MutableRefObject } from "react"
-import { Gift, Play, Sparkles, Target, Zap } from "lucide-react"
+import { ArrowLeft, Gift, Play, Sparkles, Target, X, Zap } from "lucide-react"
 
 import { Logo } from "@/components/logo"
 import { SummaryResult } from "@/components/summary-result"
 import { ThinkingAnimation } from "@/components/thinking-animation"
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { UrlInputForm } from "@/components/url-input-form"
 import type {
   SummaryCompletedResponse,
@@ -15,12 +16,72 @@ import type {
 } from "@/lib/video-summary-types"
 
 type AppState = "idle" | "loading" | "result"
+type InfoPanelKey = "how-it-works" | "what-you-get"
+type StepItem = {
+  step: string
+  title: string
+  description: string
+}
+type FeatureItem = {
+  icon: ElementType
+  title: string
+  description: string
+}
 
 const MAX_POLL_ATTEMPTS = 18
 const POLL_INTERVAL_STEPS_MS = [2500, 4000, 6000, 8000, 10000]
+const INFO_PANEL_COPY: Record<InfoPanelKey, { eyebrow: string; title: string; description: string }> = {
+  "how-it-works": {
+    eyebrow: "Как это работает",
+    title: "Никакой магии. Просто очень деловой ИИ, которому показали YouTube.",
+    description:
+      "Сервис вытаскивает транскрипт, вылавливает главное и возвращает короткую выжимку без обязательного просмотра вступления, рекламы и философской паузы на три минуты.",
+  },
+  "what-you-get": {
+    eyebrow: "Что внутри",
+    title: "Все, что нужно для быстрого знакомства с видео, без лишнего театра.",
+    description:
+      "Здесь не пытаются заменить весь ролик. Здесь честно показывают, что в нем главное, и экономят вам время, нервы и пару ненужных мотивационных абзацев.",
+  },
+}
+const HOW_IT_WORKS_STEPS: StepItem[] = [
+  {
+    step: "01",
+    title: "Берем ссылку",
+    description: "Проверяем, что это YouTube, а не очередной квест с неожиданным сюжетом.",
+  },
+  {
+    step: "02",
+    title: "Слушаем вместо вас",
+    description: "Supadata собирает транскрипт, а модель без жалости вырезает словесные круги почета.",
+  },
+  {
+    step: "03",
+    title: "Отдаем суть",
+    description: "На выходе - понятный текст, кадр по делу и кнопка озвучки, если браузер не вредничает.",
+  },
+]
+const WHAT_YOU_GET_FEATURES: FeatureItem[] = [
+  {
+    icon: Zap,
+    title: "Быстро",
+    description: "Результат приходит без долгого ритуала обновления страницы.",
+  },
+  {
+    icon: Target,
+    title: "Точно",
+    description: "Модель собирает главное, а не коллекцию случайных фраз из середины ролика.",
+  },
+  {
+    icon: Gift,
+    title: "Бесплатно",
+    description: "Без регистрации, подписки и драматичной кнопки 'начать пробный период'.",
+  },
+]
 
 export default function Home() {
   const [appState, setAppState] = useState<AppState>("idle")
+  const [activeInfoPanel, setActiveInfoPanel] = useState<InfoPanelKey | null>(null)
   const [summary, setSummary] = useState("")
   const [videoTitle, setVideoTitle] = useState("")
   const [essenceFrame, setEssenceFrame] = useState<SummaryEssenceFrame | undefined>(undefined)
@@ -170,12 +231,20 @@ export default function Home() {
           <Logo />
 
           <nav className="hidden items-center gap-6 text-sm text-muted-foreground sm:flex">
-            <a href="#how-it-works" className="transition-colors hover:text-foreground">
+            <button
+              type="button"
+              onClick={() => setActiveInfoPanel("how-it-works")}
+              className="cursor-pointer transition-colors hover:text-foreground"
+            >
               Как это работает
-            </a>
-            <a href="#what-you-get" className="transition-colors hover:text-primary">
+            </button>
+            <button
+              type="button"
+              onClick={() => setActiveInfoPanel("what-you-get")}
+              className="cursor-pointer transition-colors hover:text-primary"
+            >
               Что внутри
-            </a>
+            </button>
           </nav>
         </div>
       </header>
@@ -246,7 +315,7 @@ export default function Home() {
         <div className="mt-20 flex w-full max-w-5xl flex-col gap-8">
           <section
             id="how-it-works"
-            className="rounded-[2rem] border border-border bg-card/70 px-6 py-8 shadow-sm sm:px-8"
+            className="scroll-mt-28 rounded-[2rem] border border-border bg-card/70 px-6 py-8 shadow-sm sm:px-8"
           >
             <div className="max-w-2xl">
               <p className="text-sm font-semibold uppercase tracking-[0.25em] text-primary">Как это работает</p>
@@ -260,27 +329,15 @@ export default function Home() {
             </div>
 
             <div className="mt-8 grid gap-4 md:grid-cols-3">
-              <StepCard
-                step="01"
-                title="Берем ссылку"
-                description="Проверяем, что это YouTube, а не очередной квест с неожиданным сюжетом."
-              />
-              <StepCard
-                step="02"
-                title="Слушаем вместо вас"
-                description="Supadata собирает транскрипт, а модель без жалости вырезает словесные круги почета."
-              />
-              <StepCard
-                step="03"
-                title="Отдаем суть"
-                description="На выходе - понятный текст, кадр по делу и кнопка озвучки, если браузер не вредничает."
-              />
+              {HOW_IT_WORKS_STEPS.map((step) => (
+                <StepCard key={step.step} step={step.step} title={step.title} description={step.description} />
+              ))}
             </div>
           </section>
 
           <section
             id="what-you-get"
-            className="rounded-[2rem] border border-border bg-card/50 px-6 py-8 shadow-sm sm:px-8"
+            className="scroll-mt-28 rounded-[2rem] border border-border bg-card/50 px-6 py-8 shadow-sm sm:px-8"
           >
             <div className="max-w-2xl">
               <p className="text-sm font-semibold uppercase tracking-[0.25em] text-primary">Что внутри</p>
@@ -294,12 +351,26 @@ export default function Home() {
             </div>
 
             <div className="mt-8 grid grid-cols-1 gap-6 sm:grid-cols-3">
-              <FeatureCard icon={Zap} title="Быстро" description="Результат приходит без долгого ритуала обновления страницы." />
-              <FeatureCard icon={Target} title="Точно" description="Модель собирает главное, а не коллекцию случайных фраз из середины ролика." />
-              <FeatureCard icon={Gift} title="Бесплатно" description="Без регистрации, подписки и драматичной кнопки 'начать пробный период'." />
+              {WHAT_YOU_GET_FEATURES.map((feature) => (
+                <FeatureCard
+                  key={feature.title}
+                  icon={feature.icon}
+                  title={feature.title}
+                  description={feature.description}
+                />
+              ))}
             </div>
           </section>
         </div>
+
+        <Dialog open={activeInfoPanel !== null} onOpenChange={(open) => !open && setActiveInfoPanel(null)}>
+          <DialogContent
+            showCloseButton={false}
+            className="top-0 left-0 h-screen w-screen max-w-none translate-x-0 translate-y-0 overflow-y-auto rounded-none border-0 bg-background p-0 sm:max-w-none"
+          >
+            {activeInfoPanel && <InfoPanelDialog panel={activeInfoPanel} onClose={() => setActiveInfoPanel(null)} />}
+          </DialogContent>
+        </Dialog>
       </main>
 
       <footer className="border-t border-border bg-card/30 py-6">
@@ -461,6 +532,73 @@ function FeatureCard({
       </div>
       <h3 className="font-semibold text-foreground">{title}</h3>
       <p className="text-center text-sm text-muted-foreground">{description}</p>
+    </div>
+  )
+}
+
+function InfoPanelDialog({
+  panel,
+  onClose,
+}: {
+  panel: InfoPanelKey
+  onClose: () => void
+}) {
+  const copy = INFO_PANEL_COPY[panel]
+
+  return (
+    <div className="min-h-screen bg-background">
+      <div className="sticky top-0 z-10 border-b border-border bg-background/95 backdrop-blur-sm">
+        <div className="mx-auto flex w-full max-w-5xl items-center justify-between gap-4 px-4 py-4 sm:px-6">
+          <button
+            type="button"
+            onClick={onClose}
+            className="inline-flex items-center gap-2 rounded-full border border-border bg-card px-4 py-2 text-sm font-medium text-foreground transition-colors hover:border-primary/50 hover:text-primary"
+          >
+            <ArrowLeft className="h-4 w-4" />
+            Назад
+          </button>
+
+          <button
+            type="button"
+            onClick={onClose}
+            className="inline-flex h-10 w-10 items-center justify-center rounded-full border border-border bg-card text-muted-foreground transition-colors hover:border-primary/50 hover:text-primary"
+            aria-label="Закрыть раздел"
+          >
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+      </div>
+
+      <div className="mx-auto flex w-full max-w-5xl flex-col gap-8 px-4 py-8 sm:px-6 sm:py-10">
+        <DialogHeader className="space-y-3 text-left">
+          <p className="text-sm font-semibold uppercase tracking-[0.25em] text-primary">{copy.eyebrow}</p>
+          <DialogTitle className="max-w-3xl text-3xl leading-tight font-bold tracking-tight text-foreground sm:text-5xl">
+            {copy.title}
+          </DialogTitle>
+          <DialogDescription className="max-w-3xl text-base leading-7 text-muted-foreground sm:text-lg">
+            {copy.description}
+          </DialogDescription>
+        </DialogHeader>
+
+        {panel === "how-it-works" ? (
+          <div className="grid gap-4 md:grid-cols-3">
+            {HOW_IT_WORKS_STEPS.map((step) => (
+              <StepCard key={step.step} step={step.step} title={step.title} description={step.description} />
+            ))}
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 gap-6 sm:grid-cols-3">
+            {WHAT_YOU_GET_FEATURES.map((feature) => (
+              <FeatureCard
+                key={feature.title}
+                icon={feature.icon}
+                title={feature.title}
+                description={feature.description}
+              />
+            ))}
+          </div>
+        )}
+      </div>
     </div>
   )
 }
