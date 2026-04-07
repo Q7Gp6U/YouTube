@@ -1,6 +1,6 @@
 "use client"
 
-import { startTransition, useEffect, useRef, useState, type ElementType, type MutableRefObject } from "react"
+import { startTransition, useEffect, useMemo, useRef, useState, type ElementType, type MutableRefObject } from "react"
 import { Gift, Play, Target, Zap } from "lucide-react"
 
 import { Logo } from "@/components/logo"
@@ -9,6 +9,7 @@ import { ThinkingAnimation } from "@/components/thinking-animation"
 import { UrlInputForm } from "@/components/url-input-form"
 import type {
   SummaryCompletedResponse,
+  SummaryEssenceFrame,
   SummaryProcessingResponse,
   SummaryResponse,
 } from "@/lib/video-summary-types"
@@ -22,6 +23,8 @@ export default function Home() {
   const [appState, setAppState] = useState<AppState>("idle")
   const [summary, setSummary] = useState("")
   const [videoTitle, setVideoTitle] = useState("")
+  const [essenceFrame, setEssenceFrame] = useState<SummaryEssenceFrame | undefined>(undefined)
+  const [submittedUrl, setSubmittedUrl] = useState("")
   const [errorMessage, setErrorMessage] = useState("")
   const [loadingStatus, setLoadingStatus] = useState("Готовим запрос к транскрипту...")
   const [loadingHint, setLoadingHint] = useState("Обычно результат приходит без перезагрузки страницы.")
@@ -29,6 +32,7 @@ export default function Home() {
 
   const abortControllerRef = useRef<AbortController | null>(null)
   const activeRequestIdRef = useRef(0)
+  const videoThumbnailUrls = useMemo(() => getYouTubeThumbnailUrls(submittedUrl), [submittedUrl])
 
   useEffect(() => {
     return () => {
@@ -47,6 +51,8 @@ export default function Home() {
     setAppState("loading")
     setSummary("")
     setVideoTitle("")
+    setEssenceFrame(undefined)
+    setSubmittedUrl(url)
     setErrorMessage("")
     setLoadingVideoTitle("")
     setLoadingStatus("Проверяем ссылку и запускаем обработку...")
@@ -92,6 +98,8 @@ export default function Home() {
     setAppState("idle")
     setSummary("")
     setVideoTitle("")
+    setEssenceFrame(undefined)
+    setSubmittedUrl("")
     setErrorMessage("")
     setLoadingVideoTitle("")
   }
@@ -100,6 +108,7 @@ export default function Home() {
     startTransition(() => {
       setSummary(result.summary)
       setVideoTitle(result.videoTitle)
+      setEssenceFrame(result.essenceFrame)
       setAppState("result")
     })
   }
@@ -231,7 +240,13 @@ export default function Home() {
         )}
 
         {appState === "result" && (
-          <SummaryResult summary={summary} videoTitle={videoTitle} onReset={handleReset} />
+          <SummaryResult
+            summary={summary}
+            videoTitle={videoTitle}
+            essenceFrame={essenceFrame}
+            thumbnailUrls={videoThumbnailUrls}
+            onReset={handleReset}
+          />
         )}
       </main>
 
@@ -328,6 +343,57 @@ function createAbortError(): Error {
 
 function isAbortError(error: unknown): boolean {
   return error instanceof DOMException && error.name === "AbortError"
+}
+
+function getYouTubeThumbnailUrls(rawUrl: string): string[] {
+  const videoId = extractYouTubeVideoId(rawUrl)
+
+  if (!videoId) {
+    return []
+  }
+
+  return ["maxresdefault", "sddefault", "hqdefault", "mqdefault"].map(
+    (variant) => `https://i.ytimg.com/vi/${videoId}/${variant}.jpg`,
+  )
+}
+
+function extractYouTubeVideoId(rawUrl: string): string | null {
+  try {
+    const parsedUrl = new URL(rawUrl.trim())
+    const hostname = parsedUrl.hostname.replace(/^www\./, "").toLowerCase()
+
+    if (hostname === "youtu.be") {
+      return normalizeVideoId(parsedUrl.pathname.slice(1))
+    }
+
+    if (!hostname.endsWith("youtube.com")) {
+      return null
+    }
+
+    if (parsedUrl.pathname === "/watch") {
+      return normalizeVideoId(parsedUrl.searchParams.get("v"))
+    }
+
+    const segments = parsedUrl.pathname.split("/").filter(Boolean)
+    const supportedPrefixes = new Set(["shorts", "embed", "live"])
+
+    if (segments.length >= 2 && supportedPrefixes.has(segments[0])) {
+      return normalizeVideoId(segments[1])
+    }
+
+    return null
+  } catch {
+    return null
+  }
+}
+
+function normalizeVideoId(value: string | null | undefined): string | null {
+  if (!value) {
+    return null
+  }
+
+  const normalized = value.trim()
+  return normalized ? normalized : null
 }
 
 function FeatureCard({

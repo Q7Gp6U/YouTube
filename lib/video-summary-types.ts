@@ -12,12 +12,24 @@ export interface SummaryPollRequest {
 
 export type SummaryRequest = SummaryStartRequest | SummaryPollRequest
 
+export interface SummaryEssenceFrame {
+  sheetUrl: string
+  frameWidth: number
+  frameHeight: number
+  columns: number
+  rows: number
+  column: number
+  row: number
+  timestampMs: number
+}
+
 export interface SummaryCompletedResponse {
   status: "completed"
   summary: string
   videoTitle: string
   model: string
   transcriptLanguage?: string
+  essenceFrame?: SummaryEssenceFrame
 }
 
 export interface SummaryProcessingResponse {

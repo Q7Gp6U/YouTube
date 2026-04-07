@@ -2,6 +2,7 @@ import { GoogleGenAI, ThinkingLevel } from "@google/genai"
 
 import type {
   SummaryCompletedResponse,
+  SummaryEssenceFrame,
   SummaryPollRequest,
   SummaryProcessingResponse,
 } from "@/lib/video-summary-types"
@@ -13,6 +14,8 @@ const CHUNK_SIZE = 12_000
 const SUPADATA_METADATA_TIMEOUT_MS = 5_000
 const SUPADATA_TRANSCRIPT_INITIAL_TIMEOUT_MS = 18_000
 const SUPADATA_TRANSCRIPT_POLL_TIMEOUT_MS = 8_000
+const YOUTUBE_STORYBOARD_TIMEOUT_MS = 8_000
+const YOUTUBE_STORYBOARD_RETRY_ATTEMPTS = 0
 const GEMINI_TIMEOUT_MS = 18_000
 const SUPADATA_METADATA_RETRY_ATTEMPTS = 0
 const SUPADATA_TRANSCRIPT_INITIAL_RETRY_ATTEMPTS = 1
@@ -21,6 +24,30 @@ const GEMINI_RETRY_ATTEMPTS = 1
 const RETRY_DELAY_MS = 750
 const MAX_URL_LENGTH = 2_000
 const MAX_JOB_ID_LENGTH = 256
+const MAX_STORYBOARD_SHEETS = 8
+
+type StoryboardLevel = {
+  level: number
+  frameWidth: number
+  frameHeight: number
+  frameCount: number
+  columns: number
+  rows: number
+  intervalMs: number
+  nameTemplate: string
+}
+
+type StoryboardSpec = {
+  baseUrlTemplate: string
+  levels: StoryboardLevel[]
+}
+
+type StoryboardSheet = {
+  sheetIndex: number
+  url: string
+  mimeType: string
+  data: string
+}
 
 type SupadataTranscriptResponse =
   | {
@@ -126,6 +153,7 @@ export async function startVideoSummary(
   }
 
   return createCompletedSummary({
+    url,
     transcript: transcriptResponse.content,
     transcriptLanguage: transcriptResponse.lang,
     videoTitle,
@@ -163,6 +191,7 @@ export async function pollVideoSummary(
   const videoTitle = request.videoTitle || (await resolveVideoTitle(url))
 
   return createCompletedSummary({
+    url,
     transcript: jobResult.content,
     transcriptLanguage: jobResult.lang,
     videoTitle,
@@ -174,10 +203,12 @@ export function isExternalServiceError(error: unknown): error is ExternalService
 }
 
 async function createCompletedSummary({
+  url,
   transcript,
   transcriptLanguage,
   videoTitle,
 }: {
+  url: string
   transcript: string
   transcriptLanguage?: string
   videoTitle: string
@@ -190,6 +221,11 @@ async function createCompletedSummary({
     transcript,
     videoTitle,
   })
+  const essenceFrame = await resolveEssenceFrame({
+    url,
+    videoTitle,
+    summary,
+  })
 
   return {
     status: "completed",
@@ -197,6 +233,7 @@ async function createCompletedSummary({
     videoTitle,
     model,
     transcriptLanguage,
+    essenceFrame,
   }
 }
 
@@ -230,6 +267,376 @@ async function fetchSupadataMetadataSafely(url: string): Promise<SupadataMetadat
 
     return null
   }
+}
+
+async function resolveEssenceFrame({
+  url,
+  videoTitle,
+  summary,
+}: {
+  url: string
+  videoTitle: string
+  summary: string
+}): Promise<SummaryEssenceFrame | undefined> {
+  try {
+    const storyboard = await fetchYouTubeStoryboard(url)
+
+    if (!storyboard) {
+      return undefined
+    }
+
+    const selectedFrame = await selectEssenceFrameFromStoryboard({
+      storyboard,
+      summary,
+      videoTitle,
+    })
+
+    if (!selectedFrame) {
+      return undefined
+    }
+
+    return selectedFrame
+  } catch (error) {
+    console.warn("Failed to resolve essence frame; falling back to standard thumbnail", {
+      error: error instanceof Error ? error.message : String(error),
+      url,
+    })
+
+    return undefined
+  }
+}
+
+async function fetchYouTubeStoryboard(url: string): Promise<{
+  level: StoryboardLevel
+  sheets: StoryboardSheet[]
+} | null> {
+  const html = await fetchYouTubeWatchPage(url)
+  const storyboard = extractStoryboardSpec(html)
+
+  if (!storyboard) {
+    return null
+  }
+
+  const level = chooseStoryboardLevel(storyboard.levels)
+
+  if (!level) {
+    return null
+  }
+
+  const sheetDescriptors = buildStoryboardSheetDescriptors(storyboard.baseUrlTemplate, level)
+
+  if (sheetDescriptors.length === 0) {
+    return null
+  }
+
+  const sheets = await Promise.all(
+    sheetDescriptors.map(({ sheetIndex, url: sheetUrl }) => fetchStoryboardSheet(sheetUrl, sheetIndex)),
+  )
+
+  return {
+    level,
+    sheets,
+  }
+}
+
+async function fetchYouTubeWatchPage(url: string): Promise<string> {
+  const response = await fetchWithRetry(url, {
+    method: "GET",
+    headers: {
+      Accept: "text/html,application/xhtml+xml",
+      "User-Agent":
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36",
+    },
+    cache: "no-store",
+    serviceName: "YouTube",
+    timeoutMs: YOUTUBE_STORYBOARD_TIMEOUT_MS,
+    retries: YOUTUBE_STORYBOARD_RETRY_ATTEMPTS,
+  })
+
+  if (!response.ok) {
+    throw new ExternalServiceError(`YouTube вернул ошибку ${response.status}.`, 502)
+  }
+
+  return response.text()
+}
+
+function extractStoryboardSpec(html: string): StoryboardSpec | null {
+  const match = html.match(/"storyboards":\{"playerStoryboardSpecRenderer":\{"spec":"([^"]+)"/)
+
+  if (!match) {
+    return null
+  }
+
+  const rawSpec = decodeJsonString(match[1])
+  return parseStoryboardSpec(rawSpec)
+}
+
+function parseStoryboardSpec(rawSpec: string): StoryboardSpec | null {
+  const parts = rawSpec.split("|")
+
+  if (parts.length < 2) {
+    return null
+  }
+
+  const baseUrlTemplate = parts[0]
+  const levels = parts
+    .slice(1)
+    .map((part, index) => parseStoryboardLevel(part, index))
+    .filter((level): level is StoryboardLevel => level !== null)
+
+  if (!baseUrlTemplate || levels.length === 0) {
+    return null
+  }
+
+  return {
+    baseUrlTemplate,
+    levels,
+  }
+}
+
+function parseStoryboardLevel(part: string, level: number): StoryboardLevel | null {
+  const [frameWidth, frameHeight, frameCount, columns, rows, intervalMs, nameTemplate] = part.split("#")
+
+  const parsed = [frameWidth, frameHeight, frameCount, columns, rows, intervalMs].map((value) => Number(value))
+  const [parsedFrameWidth, parsedFrameHeight, parsedFrameCount, parsedColumns, parsedRows, parsedIntervalMs] = parsed
+
+  if (
+    !Number.isFinite(parsedFrameWidth) ||
+    !Number.isFinite(parsedFrameHeight) ||
+    !Number.isFinite(parsedFrameCount) ||
+    !Number.isFinite(parsedColumns) ||
+    !Number.isFinite(parsedRows) ||
+    !Number.isFinite(parsedIntervalMs) ||
+    parsedFrameWidth <= 0 ||
+    parsedFrameHeight <= 0 ||
+    parsedFrameCount <= 0 ||
+    parsedColumns <= 0 ||
+    parsedRows <= 0 ||
+    parsedIntervalMs < 0 ||
+    !nameTemplate
+  ) {
+    return null
+  }
+
+  return {
+    level,
+    frameWidth: parsedFrameWidth,
+    frameHeight: parsedFrameHeight,
+    frameCount: parsedFrameCount,
+    columns: parsedColumns,
+    rows: parsedRows,
+    intervalMs: parsedIntervalMs,
+    nameTemplate,
+  }
+}
+
+function chooseStoryboardLevel(levels: StoryboardLevel[]): StoryboardLevel | null {
+  if (levels.length === 0) {
+    return null
+  }
+
+  return [...levels].sort((left, right) => right.frameWidth * right.frameHeight - left.frameWidth * left.frameHeight)[0]
+}
+
+function buildStoryboardSheetDescriptors(
+  baseUrlTemplate: string,
+  level: StoryboardLevel,
+): Array<{ sheetIndex: number; url: string }> {
+  const framesPerSheet = level.columns * level.rows
+  const totalSheets = Math.ceil(level.frameCount / framesPerSheet)
+  const sampledSheetIndexes = sampleIndexes(totalSheets, MAX_STORYBOARD_SHEETS)
+
+  return sampledSheetIndexes.map((sheetIndex) => ({
+    sheetIndex,
+    url: baseUrlTemplate
+      .replace("$L", String(level.level))
+      .replace("$N", renderStoryboardSheetName(level.nameTemplate, sheetIndex)),
+  }))
+}
+
+function sampleIndexes(total: number, maxItems: number): number[] {
+  if (total <= 0 || maxItems <= 0) {
+    return []
+  }
+
+  if (total <= maxItems) {
+    return Array.from({ length: total }, (_, index) => index)
+  }
+
+  const indexes = new Set<number>([0, total - 1])
+
+  for (let step = 1; indexes.size < maxItems; step += 1) {
+    const index = Math.round((step * (total - 1)) / (maxItems - 1))
+    indexes.add(index)
+  }
+
+  return Array.from(indexes).sort((left, right) => left - right)
+}
+
+function renderStoryboardSheetName(nameTemplate: string, sheetIndex: number): string {
+  if (nameTemplate === "default") {
+    return nameTemplate
+  }
+
+  return nameTemplate.replace(/\$M/g, String(sheetIndex))
+}
+
+async function fetchStoryboardSheet(url: string, sheetIndex: number): Promise<StoryboardSheet> {
+  const response = await fetchWithRetry(url, {
+    method: "GET",
+    cache: "no-store",
+    serviceName: "YouTube storyboard",
+    timeoutMs: YOUTUBE_STORYBOARD_TIMEOUT_MS,
+    retries: YOUTUBE_STORYBOARD_RETRY_ATTEMPTS,
+  })
+
+  if (!response.ok) {
+    throw new ExternalServiceError(`YouTube storyboard вернул ошибку ${response.status}.`, 502)
+  }
+
+  const mimeType = response.headers.get("content-type")?.split(";")[0]?.trim() || "image/jpeg"
+  const buffer = Buffer.from(await response.arrayBuffer())
+
+  return {
+    sheetIndex,
+    url,
+    mimeType,
+    data: buffer.toString("base64"),
+  }
+}
+
+async function selectEssenceFrameFromStoryboard({
+  storyboard,
+  summary,
+  videoTitle,
+}: {
+  storyboard: { level: StoryboardLevel; sheets: StoryboardSheet[] }
+  summary: string
+  videoTitle: string
+}): Promise<SummaryEssenceFrame | undefined> {
+  if (storyboard.sheets.length === 0) {
+    return undefined
+  }
+
+  const ai = getGeminiClient()
+  const promptParts: Array<{ text?: string; inlineData?: { mimeType: string; data: string } }> = [
+    {
+      text: [
+        "Ты выбираешь один кадр, который лучше всего передает суть YouTube-видео.",
+        `Название: ${videoTitle}`,
+        `Краткое содержание: ${summary}`,
+        `В каждом storyboard-листе сетка ${storyboard.level.columns}x${storyboard.level.rows}.`,
+        "Нужно выбрать один самый показательный кадр: объект, тема или главный предмет видео должны быть визуально понятны.",
+        "Верни только JSON без пояснений в формате:",
+        '{"sheetIndex":0,"column":0,"row":0}',
+      ].join("\n"),
+    },
+  ]
+
+  for (const sheet of storyboard.sheets) {
+    promptParts.push({ text: `Лист ${sheet.sheetIndex}` })
+    promptParts.push({
+      inlineData: {
+        mimeType: sheet.mimeType,
+        data: sheet.data,
+      },
+    })
+  }
+
+  try {
+    const response = await ai.models.generateContent({
+      model: GEMINI_MODEL,
+      contents: [{ role: "user", parts: promptParts }],
+      config: {
+        temperature: 0.1,
+        maxOutputTokens: 120,
+        responseMimeType: "application/json",
+        thinkingConfig: {
+          thinkingLevel: ThinkingLevel.MINIMAL,
+        },
+        httpOptions: {
+          timeout: GEMINI_TIMEOUT_MS,
+          retryOptions: {
+            attempts: 1,
+          },
+        },
+      },
+    })
+
+    const selection = parseEssenceFrameSelection(response.text ?? "")
+
+    if (!selection) {
+      return undefined
+    }
+
+    const matchedSheet = storyboard.sheets.find((sheet) => sheet.sheetIndex === selection.sheetIndex)
+
+    if (!matchedSheet) {
+      return undefined
+    }
+
+    const column = Math.min(selection.column, storyboard.level.columns - 1)
+    const row = Math.min(selection.row, storyboard.level.rows - 1)
+
+    return {
+      sheetUrl: matchedSheet.url,
+      frameWidth: storyboard.level.frameWidth,
+      frameHeight: storyboard.level.frameHeight,
+      columns: storyboard.level.columns,
+      rows: storyboard.level.rows,
+      column,
+      row,
+      timestampMs:
+        (selection.sheetIndex * storyboard.level.columns * storyboard.level.rows + row * storyboard.level.columns + column) *
+        storyboard.level.intervalMs,
+    }
+  } catch (error) {
+    console.warn("Gemini could not choose an essence frame", {
+      error: error instanceof Error ? error.message : String(error),
+    })
+
+    return undefined
+  }
+}
+
+function parseEssenceFrameSelection(rawValue: string): { sheetIndex: number; column: number; row: number } | null {
+  const normalized = stripCodeFence(rawValue.trim())
+
+  if (!normalized) {
+    return null
+  }
+
+  try {
+    const parsed = JSON.parse(normalized) as {
+      sheetIndex?: unknown
+      column?: unknown
+      row?: unknown
+    }
+
+    if (
+      typeof parsed.sheetIndex !== "number" ||
+      typeof parsed.column !== "number" ||
+      typeof parsed.row !== "number"
+    ) {
+      return null
+    }
+
+    return {
+      sheetIndex: Math.max(0, Math.floor(parsed.sheetIndex)),
+      column: Math.max(0, Math.floor(parsed.column)),
+      row: Math.max(0, Math.floor(parsed.row)),
+    }
+  } catch {
+    return null
+  }
+}
+
+function stripCodeFence(value: string): string {
+  return value.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "").trim()
+}
+
+function decodeJsonString(value: string): string {
+  return JSON.parse(`"${value}"`) as string
 }
 
 async function fetchSupadataTranscript(url: string): Promise<SupadataTranscriptResponse> {
