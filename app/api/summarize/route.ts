@@ -1,11 +1,18 @@
 import { NextResponse } from "next/server"
+import { z } from "zod"
 
+import {
+  checkRateLimit,
+  getClientIp,
+  isTrustedOrigin,
+  MAX_JSON_REQUEST_BYTES,
+} from "@/lib/request-security"
 import {
   isExternalServiceError,
   pollVideoSummary,
   startVideoSummary,
 } from "@/lib/video-summary"
-import type { SummaryRequest } from "@/lib/video-summary-types"
+import { MAX_YOUTUBE_URL_LENGTH } from "@/lib/youtube"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -13,6 +20,43 @@ export const maxDuration = 60
 
 const JSON_CONTENT_TYPE = "application/json"
 const MAX_VIDEO_TITLE_LENGTH = 300
+const MAX_JOB_ID_LENGTH = 256
+const START_RATE_LIMIT = {
+  limit: 6,
+  windowMs: 10 * 60 * 1_000,
+}
+const POLL_RATE_LIMIT = {
+  limit: 120,
+  windowMs: 10 * 60 * 1_000,
+}
+const SUPADATA_JOB_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9:_-]{0,255}$/
+
+const summaryRequestSchema = z.discriminatedUnion("action", [
+  z
+    .object({
+      action: z.literal("start"),
+      url: z.string().trim().min(1).max(MAX_YOUTUBE_URL_LENGTH),
+    })
+    .strict(),
+  z
+    .object({
+      action: z.literal("poll"),
+      url: z.string().trim().min(1).max(MAX_YOUTUBE_URL_LENGTH),
+      jobId: z.string().trim().min(1).max(MAX_JOB_ID_LENGTH).regex(SUPADATA_JOB_ID_PATTERN),
+      videoTitle: z.preprocess(
+        (value) => {
+          if (typeof value !== "string") {
+            return value
+          }
+
+          const normalized = value.trim()
+          return normalized ? normalized : undefined
+        },
+        z.string().max(MAX_VIDEO_TITLE_LENGTH).optional(),
+      ),
+    })
+    .strict(),
+])
 
 export async function POST(request: Request) {
   try {
@@ -26,66 +70,99 @@ export async function POST(request: Request) {
       )
     }
 
-    const body = await parseRequestBody(request)
+    if (!isTrustedOrigin(request)) {
+      return NextResponse.json(
+        {
+          status: "error",
+          message: "Запрос отклонен политикой origin.",
+        },
+        {
+          status: 403,
+          headers: {
+            "Cache-Control": "no-store",
+          },
+        },
+      )
+    }
+
+    const contentLength = request.headers.get("content-length")
+
+    if (contentLength && Number.parseInt(contentLength, 10) > MAX_JSON_REQUEST_BYTES) {
+      return NextResponse.json(
+        {
+          status: "error",
+          message: "Тело запроса слишком большое для этого метода.",
+        },
+        {
+          status: 413,
+          headers: {
+            "Cache-Control": "no-store",
+          },
+        },
+      )
+    }
+
+    const rawBody = await parseRequestBody(request)
+    const parsedBody = summaryRequestSchema.safeParse(rawBody)
+
+    if (!parsedBody.success) {
+      return NextResponse.json(
+        {
+          status: "error",
+          message: "Тело запроса содержит некорректные параметры.",
+        },
+        {
+          status: 400,
+          headers: {
+            "Cache-Control": "no-store",
+          },
+        },
+      )
+    }
+
+    const body = parsedBody.data
+    const rateLimit = getRateLimitDecision(request, body.action)
+
+    if (!rateLimit.allowed) {
+      return NextResponse.json(
+        {
+          status: "error",
+          message: "Слишком много запросов. Повторите попытку чуть позже.",
+        },
+        {
+          status: 429,
+          headers: {
+            "Retry-After": String(rateLimit.retryAfterSeconds),
+            "Cache-Control": "no-store",
+          },
+        },
+      )
+    }
 
     if (body.action === "start") {
-      if (typeof body.url !== "string" || !body.url.trim()) {
-        return NextResponse.json(
-          {
-            status: "error",
-            message: "Передайте ссылку на YouTube-видео.",
-          },
-          { status: 400 },
-        )
-      }
-
-      const result = await startVideoSummary(body.url.trim())
+      const result = await startVideoSummary(body.url)
 
       return NextResponse.json(result, {
         status: result.status === "processing" ? 202 : 200,
+        headers: {
+          "Cache-Control": "no-store",
+        },
       })
     }
 
-    if (body.action === "poll") {
-      if (typeof body.url !== "string" || !body.url.trim()) {
-        return NextResponse.json(
-          {
-            status: "error",
-            message: "Для проверки статуса нужна ссылка на видео.",
-          },
-          { status: 400 },
-        )
-      }
+    const result = await pollVideoSummary({
+      action: "poll",
+      jobId: body.jobId,
+      url: body.url,
+      videoTitle: body.videoTitle,
+    })
 
-      if (typeof body.jobId !== "string" || !body.jobId.trim()) {
-        return NextResponse.json(
-          {
-            status: "error",
-            message: "Для проверки статуса нужен jobId от Supadata.",
-          },
-          { status: 400 },
-        )
-      }
-
-      const result = await pollVideoSummary({
-        action: "poll",
-        jobId: body.jobId.trim(),
-        url: body.url.trim(),
-        videoTitle: normalizeVideoTitle(body.videoTitle),
-      })
-
-      return NextResponse.json(result, {
-        status: result.status === "processing" ? 202 : 200,
-      })
-    }
-
-    return NextResponse.json(
-      {
-        status: "error",
-        message: "Неподдерживаемое действие API.",
+    return NextResponse.json(result, {
+      status: result.status === "processing" ? 202 : 200,
+      headers: {
+        "Cache-Control": "no-store",
       },
-      { status: 400 },
-    )
+    })
   } catch (error) {
     if (error instanceof Error && (error.message === "invalid-json" || error.message === "invalid-body")) {
       return NextResponse.json(
@@ -93,7 +170,12 @@ export async function POST(request: Request) {
           status: "error",
           message: "Тело запроса должно содержать корректный JSON-объект.",
         },
-        { status: 400 },
+        {
+          status: 400,
+          headers: {
+            "Cache-Control": "no-store",
+          },
+        },
       )
     }
 
@@ -103,7 +185,12 @@ export async function POST(request: Request) {
           status: "error",
           message: error.message,
         },
-        { status: error.statusCode },
+        {
+          status: error.statusCode,
+          headers: {
+            "Cache-Control": "no-store",
+          },
+        },
       )
     }
 
@@ -114,12 +201,17 @@ export async function POST(request: Request) {
         status: "error",
         message: "Произошла непредвиденная ошибка при обработке видео.",
       },
-      { status: 500 },
+      {
+        status: 500,
+        headers: {
+          "Cache-Control": "no-store",
+        },
+      },
     )
   }
 }
 
-async function parseRequestBody(request: Request): Promise<Partial<SummaryRequest>> {
+async function parseRequestBody(request: Request): Promise<unknown> {
   let body: unknown
 
   try {
@@ -132,19 +224,12 @@ async function parseRequestBody(request: Request): Promise<Partial<SummaryReques
     throw new Error("invalid-body")
   }
 
-  return body as Partial<SummaryRequest>
+  return body
 }
 
-function normalizeVideoTitle(value: unknown): string | undefined {
-  if (typeof value !== "string") {
-    return undefined
-  }
+function getRateLimitDecision(request: Request, action: "start" | "poll") {
+  const clientIp = getClientIp(request)
+  const rateLimitKey = `${action}:${clientIp}`
 
-  const normalized = value.trim()
-
-  if (!normalized) {
-    return undefined
-  }
-
-  return normalized.slice(0, MAX_VIDEO_TITLE_LENGTH)
+  return checkRateLimit(rateLimitKey, action === "start" ? START_RATE_LIMIT : POLL_RATE_LIMIT)
 }

@@ -14,6 +14,7 @@ import type {
   SummaryProcessingResponse,
   SummaryResponse,
 } from "@/lib/video-summary-types"
+import { extractYouTubeVideoId } from "@/lib/youtube"
 
 type AppState = "idle" | "loading" | "result"
 type InfoPanelKey = "how-it-works" | "what-you-get"
@@ -468,45 +469,6 @@ function getYouTubeThumbnailUrls(rawUrl: string): string[] {
   return ["maxresdefault", "sddefault", "hqdefault", "mqdefault"].map(
     (variant) => `https://i.ytimg.com/vi/${videoId}/${variant}.jpg`,
   )
-}
-
-function extractYouTubeVideoId(rawUrl: string): string | null {
-  try {
-    const parsedUrl = new URL(rawUrl.trim())
-    const hostname = parsedUrl.hostname.replace(/^www\./, "").toLowerCase()
-
-    if (hostname === "youtu.be") {
-      return normalizeVideoId(parsedUrl.pathname.slice(1))
-    }
-
-    if (!hostname.endsWith("youtube.com")) {
-      return null
-    }
-
-    if (parsedUrl.pathname === "/watch") {
-      return normalizeVideoId(parsedUrl.searchParams.get("v"))
-    }
-
-    const segments = parsedUrl.pathname.split("/").filter(Boolean)
-    const supportedPrefixes = new Set(["shorts", "embed", "live"])
-
-    if (segments.length >= 2 && supportedPrefixes.has(segments[0])) {
-      return normalizeVideoId(segments[1])
-    }
-
-    return null
-  } catch {
-    return null
-  }
-}
-
-function normalizeVideoId(value: string | null | undefined): string | null {
-  if (!value) {
-    return null
-  }
-
-  const normalized = value.trim()
-  return normalized ? normalized : null
 }
 
 function FeatureCard({

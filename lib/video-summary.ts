@@ -6,6 +6,7 @@ import type {
   SummaryPollRequest,
   SummaryProcessingResponse,
 } from "@/lib/video-summary-types"
+import { normalizeYouTubeWatchUrl } from "@/lib/youtube"
 
 const SUPADATA_BASE_URL = "https://api.supadata.ai/v1"
 const GEMINI_MODEL = "gemini-3.1-flash-lite-preview"
@@ -24,9 +25,9 @@ const SUPADATA_TRANSCRIPT_POLL_RETRY_ATTEMPTS = 0
 const GEMINI_RETRY_ATTEMPTS = 1
 const RETRY_DELAY_MS = 750
 const SUPADATA_MIN_INTERVAL_MS = 1_000
-const MAX_URL_LENGTH = 2_000
 const MAX_JOB_ID_LENGTH = 256
 const MAX_STORYBOARD_SHEETS = 8
+const SUPADATA_JOB_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9:_-]{0,255}$/
 
 type StoryboardLevel = {
   level: number
@@ -101,41 +102,13 @@ class ExternalServiceError extends Error {
 }
 
 export function normalizeYouTubeUrl(rawUrl: string): string {
-  if (rawUrl.length > MAX_URL_LENGTH) {
-    throw new ExternalServiceError("Ссылка на YouTube-видео слишком длинная.", 400)
-  }
+  const normalizedUrl = normalizeYouTubeWatchUrl(rawUrl)
 
-  let parsedUrl: URL
-
-  try {
-    parsedUrl = new URL(rawUrl.trim())
-  } catch {
-    throw new ExternalServiceError("Введите корректную ссылку на YouTube-видео.", 400)
-  }
-
-  const hostname = parsedUrl.hostname.replace(/^www\./, "").toLowerCase()
-  let videoId = ""
-
-  if (hostname === "youtu.be") {
-    videoId = parsedUrl.pathname.slice(1)
-  } else if (hostname.endsWith("youtube.com")) {
-    if (parsedUrl.pathname === "/watch") {
-      videoId = parsedUrl.searchParams.get("v") ?? ""
-    } else {
-      const segments = parsedUrl.pathname.split("/").filter(Boolean)
-      const supportedPrefixes = new Set(["shorts", "embed", "live"])
-
-      if (segments.length >= 2 && supportedPrefixes.has(segments[0])) {
-        videoId = segments[1]
-      }
-    }
-  }
-
-  if (!videoId) {
+  if (!normalizedUrl) {
     throw new ExternalServiceError("Ссылка должна вести на конкретное YouTube-видео.", 400)
   }
 
-  return `https://www.youtube.com/watch?v=${videoId}`
+  return normalizedUrl
 }
 
 export async function startVideoSummary(
@@ -190,7 +163,9 @@ export async function pollVideoSummary(
     throw new ExternalServiceError("Supadata вернул пустой транскрипт.", 502)
   }
 
-  const videoTitle = shouldResolveVideoTitle(request.videoTitle) ? await resolveVideoTitle(url) : request.videoTitle
+  const videoTitle = shouldResolveVideoTitle(request.videoTitle)
+    ? await resolveVideoTitle(url)
+    : request.videoTitle ?? PROCESSING_VIDEO_TITLE
 
   return createCompletedSummary({
     url,
@@ -1279,6 +1254,10 @@ function normalizeJobId(jobId: string): string {
 
   if (normalized.length > MAX_JOB_ID_LENGTH) {
     throw new ExternalServiceError("jobId от Supadata имеет некорректную длину.", 400)
+  }
+
+  if (!SUPADATA_JOB_ID_PATTERN.test(normalized)) {
+    throw new ExternalServiceError("jobId от Supadata содержит недопустимые символы.", 400)
   }
 
   return normalized

@@ -5,6 +5,7 @@ import { ArrowRight, Play } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
+import { MAX_YOUTUBE_URL_LENGTH } from "@/lib/youtube"
 
 interface UrlInputFormProps {
   onSubmit: (url: string) => Promise<void> | void
@@ -65,6 +66,7 @@ export function UrlInputForm({ onSubmit, isLoading }: UrlInputFormProps) {
           disabled={isLoading}
           inputMode="url"
           autoComplete="url"
+          maxLength={MAX_YOUTUBE_URL_LENGTH}
         />
 
         <div className="absolute right-2">
