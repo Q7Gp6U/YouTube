@@ -1,9 +1,9 @@
 import { GoogleGenAI, ThinkingLevel } from "@google/genai"
 
 import type {
+  ProviderSummaryPollRequest,
   SummaryCompletedResponse,
   SummaryEssenceFrame,
-  SummaryPollRequest,
   SummaryProcessingResponse,
 } from "@/lib/video-summary-types"
 import { normalizeYouTubeWatchUrl } from "@/lib/youtube"
@@ -136,7 +136,7 @@ export async function startVideoSummary(
 }
 
 export async function pollVideoSummary(
-  request: SummaryPollRequest,
+  request: ProviderSummaryPollRequest,
 ): Promise<SummaryCompletedResponse | SummaryProcessingResponse> {
   const url = normalizeYouTubeUrl(request.url)
   const jobId = normalizeJobId(request.jobId)

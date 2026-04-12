@@ -10,9 +10,10 @@ import { MAX_YOUTUBE_URL_LENGTH } from "@/lib/youtube"
 interface UrlInputFormProps {
   onSubmit: (url: string) => Promise<void> | void
   isLoading?: boolean
+  isDisabled?: boolean
 }
 
-export function UrlInputForm({ onSubmit, isLoading }: UrlInputFormProps) {
+export function UrlInputForm({ onSubmit, isLoading, isDisabled }: UrlInputFormProps) {
   const [url, setUrl] = useState("")
   const [isFocused, setIsFocused] = useState(false)
   const submitLockRef = useRef(false)
@@ -28,7 +29,7 @@ export function UrlInputForm({ onSubmit, isLoading }: UrlInputFormProps) {
 
     const normalizedUrl = url.trim()
 
-    if (!normalizedUrl || submitLockRef.current || isLoading) {
+    if (!normalizedUrl || submitLockRef.current || isLoading || isDisabled) {
       return
     }
 
@@ -46,7 +47,7 @@ export function UrlInputForm({ onSubmit, isLoading }: UrlInputFormProps) {
       <div
         className={`relative flex items-center rounded-2xl transition-all duration-300 ${
           isFocused ? "ring-2 ring-primary shadow-lg shadow-primary/20" : ""
-        }`}
+        } ${isDisabled ? "opacity-80" : ""}`}
       >
         <div className="pointer-events-none absolute left-4 flex items-center">
           <div className="flex h-8 w-10 items-center justify-center rounded-md bg-primary">
@@ -60,10 +61,10 @@ export function UrlInputForm({ onSubmit, isLoading }: UrlInputFormProps) {
           onChange={(event) => setUrl(event.target.value)}
           onFocus={() => setIsFocused(true)}
           onBlur={() => setIsFocused(false)}
-          placeholder="Вставьте ссылку на YouTube-видео..."
+          placeholder={isDisabled ? "Сначала пополните баланс кредитов..." : "Вставьте ссылку на YouTube-видео..."}
           className="h-16 rounded-2xl border-border bg-card pr-44 text-base placeholder:text-muted-foreground focus-visible:ring-0 focus-visible:ring-offset-0"
           style={{ paddingLeft: "4.5rem" }}
-          disabled={isLoading}
+          disabled={isLoading || isDisabled}
           inputMode="url"
           autoComplete="url"
           maxLength={MAX_YOUTUBE_URL_LENGTH}
@@ -72,10 +73,10 @@ export function UrlInputForm({ onSubmit, isLoading }: UrlInputFormProps) {
         <div className="absolute right-2">
           <Button
             type="submit"
-            disabled={!url.trim() || isLoading}
+            disabled={!url.trim() || isLoading || isDisabled}
             className="h-12 gap-2 rounded-xl bg-primary px-6 font-semibold text-primary-foreground shadow-lg shadow-primary/30 transition-all hover:bg-primary/90 hover:shadow-xl hover:shadow-primary/40 disabled:shadow-none"
           >
-            {isLoading ? "Обрабатываем..." : "Получить суть"}
+            {isLoading ? "Обрабатываем..." : isDisabled ? "Нет кредитов" : "Получить суть"}
             <ArrowRight className="h-4 w-4" />
           </Button>
         </div>

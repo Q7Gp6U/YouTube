@@ -1,7 +1,7 @@
 "use client"
 
 import { useEffect, useRef, useState } from "react"
-import { Check, Copy, ImageOff, Play, RotateCcw, Square, Volume2 } from "lucide-react"
+import { Check, Copy, ImageOff, Play, RotateCcw, Square, Volume2, Wallet } from "lucide-react"
 
 import { AspectRatio } from "@/components/ui/aspect-ratio"
 import { Button } from "@/components/ui/button"
@@ -12,33 +12,36 @@ interface SummaryResultProps {
   videoTitle: string
   essenceFrame?: SummaryEssenceFrame
   thumbnailUrls: string[]
+  creditsRemaining: number
   onReset: () => void
 }
 
-export function SummaryResult({ summary, videoTitle, essenceFrame, thumbnailUrls, onReset }: SummaryResultProps) {
+export function SummaryResult({
+  summary,
+  videoTitle,
+  essenceFrame,
+  thumbnailUrls,
+  creditsRemaining,
+  onReset,
+}: SummaryResultProps) {
   const [copied, setCopied] = useState(false)
   const [copyError, setCopyError] = useState("")
   const [isSpeaking, setIsSpeaking] = useState(false)
   const [speechError, setSpeechError] = useState("")
-  const [speechSupported, setSpeechSupported] = useState(false)
-  const [thumbnailIndex, setThumbnailIndex] = useState(0)
-  const [thumbnailUnavailable, setThumbnailUnavailable] = useState(false)
-  const [hasEssenceFrameError, setHasEssenceFrameError] = useState(false)
+  const speechSupported = typeof window !== "undefined" && "speechSynthesis" in window
+  const thumbnailSourceKey = thumbnailUrls.join("|")
+  const essenceFrameKey = essenceFrame ? [essenceFrame.sheetUrl, essenceFrame.column, essenceFrame.row, essenceFrame.timestampMs].join(":") : "none"
+  const [thumbnailState, setThumbnailState] = useState(() => ({ sourceKey: thumbnailUrls.join("|"), index: 0, unavailable: false }))
+  const [essenceFrameState, setEssenceFrameState] = useState(() => ({ key: essenceFrame ? [essenceFrame.sheetUrl, essenceFrame.column, essenceFrame.row, essenceFrame.timestampMs].join(":") : "none", hasError: false }))
   const utteranceRef = useRef<SpeechSynthesisUtterance | null>(null)
 
-  const activeThumbnailUrl = thumbnailUrls[thumbnailIndex]
+  const activeThumbnailIndex = thumbnailState.sourceKey === thumbnailSourceKey ? thumbnailState.index : 0
+  const thumbnailUnavailable = thumbnailState.sourceKey === thumbnailSourceKey ? thumbnailState.unavailable : false
+  const hasEssenceFrameError = essenceFrameState.key === essenceFrameKey ? essenceFrameState.hasError : false
+  const activeThumbnailUrl = thumbnailUrls[activeThumbnailIndex]
   const shouldShowEssenceFrame = Boolean(essenceFrame && !hasEssenceFrameError)
   const shouldShowThumbnail = Boolean(activeThumbnailUrl) && !thumbnailUnavailable
   const hasVisualPreview = shouldShowEssenceFrame || shouldShowThumbnail
-
-  useEffect(() => {
-    setThumbnailIndex(0)
-    setThumbnailUnavailable(false)
-  }, [thumbnailUrls])
-
-  useEffect(() => {
-    setHasEssenceFrameError(false)
-  }, [essenceFrame])
 
   useEffect(() => {
     return () => {
@@ -46,14 +49,6 @@ export function SummaryResult({ summary, videoTitle, essenceFrame, thumbnailUrls
         window.speechSynthesis.cancel()
       }
     }
-  }, [])
-
-  useEffect(() => {
-    if (typeof window === "undefined") {
-      return
-    }
-
-    setSpeechSupported("speechSynthesis" in window)
   }, [])
 
   const handleCopy = async () => {
@@ -112,23 +107,34 @@ export function SummaryResult({ summary, videoTitle, essenceFrame, thumbnailUrls
   }
 
   const handleThumbnailError = () => {
-    setThumbnailIndex((currentIndex) => {
+    setThumbnailState((currentState) => {
+      const currentIndex = currentState.sourceKey === thumbnailSourceKey ? currentState.index : 0
+
       if (currentIndex >= thumbnailUrls.length - 1) {
-        setThumbnailUnavailable(true)
-        return currentIndex
+        return { sourceKey: thumbnailSourceKey, index: currentIndex, unavailable: true }
       }
 
-      return currentIndex + 1
+      return { sourceKey: thumbnailSourceKey, index: currentIndex + 1, unavailable: false }
     })
   }
 
   return (
     <div className="mx-auto w-full max-w-2xl animate-fade-in-up">
-      <div className="mb-6 flex items-center justify-center gap-3">
+      <div className="mb-4 flex flex-wrap items-center justify-center gap-3">
         <div className="flex h-10 w-10 items-center justify-center rounded-full bg-primary">
           <Check className="h-5 w-5 text-primary-foreground" />
         </div>
         <h2 className="text-xl font-semibold text-foreground">Готово!</h2>
+      </div>
+
+      <div className="mb-6 flex items-center justify-center">
+        <div className="flex items-center gap-3 rounded-2xl border border-primary/30 bg-primary/10 px-4 py-3 text-sm">
+          <Wallet className="h-4 w-4 text-primary" />
+          <div>
+            <p className="font-semibold text-foreground">Остаток после обработки: {creditsRemaining} кредит(ов)</p>
+            <p className="text-xs text-muted-foreground">Баланс уже обновлен и готов к следующему видео.</p>
+          </div>
+        </div>
       </div>
 
       <div className="mb-6 grid gap-4 lg:grid-cols-[minmax(0,1.2fr)_minmax(18rem,0.8fr)]">
@@ -159,7 +165,7 @@ export function SummaryResult({ summary, videoTitle, essenceFrame, thumbnailUrls
                   aria-hidden="true"
                   className="pointer-events-none absolute left-0 top-0 block max-w-none select-none"
                   loading="eager"
-                  onError={() => setHasEssenceFrameError(true)}
+                  onError={() => setEssenceFrameState({ key: essenceFrameKey, hasError: true })}
                   style={{
                     width: `${essenceFrame.columns * 100}%`,
                     height: `${essenceFrame.rows * 100}%`,
@@ -242,9 +248,7 @@ export function SummaryResult({ summary, videoTitle, essenceFrame, thumbnailUrls
 
       <div className="rounded-2xl border border-border bg-card p-6 shadow-lg">
         <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
-          <h3 className="text-sm font-semibold uppercase tracking-wider text-primary">
-            Краткое содержание
-          </h3>
+          <h3 className="text-sm font-semibold uppercase tracking-wider text-primary">Краткое содержание</h3>
 
           <div className="flex flex-wrap gap-2">
             <Button
@@ -288,9 +292,7 @@ export function SummaryResult({ summary, videoTitle, essenceFrame, thumbnailUrls
           </div>
         </div>
 
-        {(copyError || speechError) && (
-          <p className="mb-4 text-sm text-muted-foreground">{copyError || speechError}</p>
-        )}
+        {(copyError || speechError) && <p className="mb-4 text-sm text-muted-foreground">{copyError || speechError}</p>}
 
         <p className="whitespace-pre-line text-lg leading-relaxed text-foreground">{summary}</p>
       </div>

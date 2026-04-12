@@ -5,8 +5,12 @@ export interface SummaryStartRequest {
 
 export interface SummaryPollRequest {
   action: "poll"
-  url: string
   jobId: string
+}
+
+export interface ProviderSummaryPollRequest {
+  jobId: string
+  url: string
   videoTitle?: string
 }
 
@@ -23,7 +27,11 @@ export interface SummaryEssenceFrame {
   timestampMs: number
 }
 
-export interface SummaryCompletedResponse {
+interface SummaryCreditsMeta {
+  creditsRemaining?: number
+}
+
+export interface SummaryCompletedResponse extends SummaryCreditsMeta {
   status: "completed"
   summary: string
   videoTitle: string
@@ -32,7 +40,7 @@ export interface SummaryCompletedResponse {
   essenceFrame?: SummaryEssenceFrame
 }
 
-export interface SummaryProcessingResponse {
+export interface SummaryProcessingResponse extends SummaryCreditsMeta {
   status: "processing"
   jobId: string
   videoTitle: string
@@ -41,9 +49,7 @@ export interface SummaryProcessingResponse {
 export interface SummaryErrorResponse {
   status: "error"
   message: string
+  creditsRemaining?: number
 }
 
-export type SummaryResponse =
-  | SummaryCompletedResponse
-  | SummaryProcessingResponse
-  | SummaryErrorResponse
+export type SummaryResponse = SummaryCompletedResponse | SummaryProcessingResponse | SummaryErrorResponse

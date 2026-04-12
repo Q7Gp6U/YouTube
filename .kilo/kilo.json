@@ -4,6 +4,27 @@
     "context7": {
       "type": "remote",
       "url": "https://mcp.context7.com/mcp"
+    },
+    "supabase": {
+      "type": "remote",
+      "url": "https://mcp.supabase.com/mcp",
+      "enabled": false
+    },
+    "chrome-devtools": {
+      "type": "local",
+      "command": [
+        "npx",
+        "--prefix",
+        ".kilo",
+        "chrome-devtools-mcp",
+        "--isolated",
+        "--no-usage-statistics"
+      ],
+      "environment": {
+        "CHROME_DEVTOOLS_MCP_NO_UPDATE_CHECKS": "1"
+      },
+      "enabled": true,
+      "timeout": 30000
     }
   }
 }
