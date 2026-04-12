@@ -25,7 +25,7 @@ const BENEFITS = [
   {
     icon: Sparkles,
     title: "Без лишних шагов",
-    description: "Вставляете ссылку, видите стоимость, остаток кредитов и получаете выжимку без лишнего ритуала.",
+    description: "Регистрируетесь, сразу попадаете в приложение и получаете выжимку без лишнего ритуала.",
   },
 ] as const
 
@@ -43,7 +43,7 @@ export function AuthPageClient({ initialError }: { initialError?: string }) {
     () =>
       mode === "login"
         ? "Войдите и продолжайте смотреть YouTube не глазами"
-        : "Создайте аккаунт и получите стартовые кредиты",
+        : "Создайте аккаунт и сразу получите доступ",
     [mode],
   )
 
@@ -69,7 +69,6 @@ export function AuthPageClient({ initialError }: { initialError?: string }) {
             data: {
               full_name: fullName.trim() || null,
             },
-            emailRedirectTo: `${window.location.origin}/auth/callback`,
           },
         })
 
@@ -83,7 +82,7 @@ export function AuthPageClient({ initialError }: { initialError?: string }) {
           return
         }
 
-        setNotice("Аккаунт создан. Проверьте почту и подтвердите адрес, если это требуется в настройках Supabase.")
+        setNotice("Аккаунт создан. Если вход не открылся сразу, в этом окружении может быть включено дополнительное подтверждение email.")
         setMode("login")
         return
       }
@@ -121,7 +120,7 @@ export function AuthPageClient({ initialError }: { initialError?: string }) {
         <section className="space-y-8">
           <div className="inline-flex items-center gap-2 rounded-full border border-primary/20 bg-primary/10 px-4 py-2 text-sm font-medium text-primary">
             <Play className="h-4 w-4 fill-primary text-primary" />
-            Сначала аккаунт, потом выжимка
+            Регистрация занимает минуту и не тормозит доступ
           </div>
 
           <div className="space-y-4">
@@ -129,8 +128,8 @@ export function AuthPageClient({ initialError }: { initialError?: string }) {
               YouTube по-прежнему длинный. Теперь хотя бы доступ к сокращению под контролем.
             </h1>
             <p className="max-w-2xl text-lg leading-8 text-muted-foreground">
-              Зарегистрируйтесь, получите 5 стартовых кредитов и используйте их только на те ролики, которые правда
-              хочется не смотреть целиком.
+              Зарегистрируйтесь, сразу попадите в приложение, получите 5 стартовых кредитов и тратьте их только на
+              те ролики, которые правда хочется не смотреть целиком.
             </p>
           </div>
 
@@ -162,7 +161,7 @@ export function AuthPageClient({ initialError }: { initialError?: string }) {
             <p className="text-sm leading-6 text-muted-foreground">
               {mode === "login"
                 ? "Используйте email и пароль, чтобы открыть доступ к главной странице и своему балансу кредитов."
-                : "После регистрации Supabase создаст профиль и автоматически начислит 5 тестовых кредитов."}
+                : "После регистрации вы сразу попадете в приложение, а профиль и 5 тестовых кредитов создадутся автоматически."}
             </p>
           </div>
 
@@ -277,7 +276,7 @@ function getAuthErrorMessage(error: unknown) {
   }
 
   if (/email not confirmed/i.test(error.message)) {
-    return "Почта еще не подтверждена. Проверьте письмо от Supabase и повторите вход."
+    return "В этом окружении для входа пока требуется подтверждение email. Обычно после отключения этой настройки доступ открывается сразу."
   }
 
   return error.message
