@@ -761,10 +761,10 @@ async function callGemini({
         },
       })
 
-      const summary = ensureRussianSummary(response.text ?? "")
+      const summary = ensureRussianSummary(extractGeminiResponseText(response))
 
       if (!summary) {
-        throw new ExternalServiceError("Gemini вернул пустой ответ при создании краткого содержания.", 502)
+        throw createGeminiNoTextError(response)
       }
 
       return {
@@ -963,6 +963,177 @@ function ensureRussianSummary(summary: string): string {
   }
 
   throw new ExternalServiceError("Gemini вернул ответ не на русском языке.", 502)
+}
+
+function extractGeminiResponseText(response: unknown): string {
+  const directText = extractCandidateText(response)
+
+  if (directText) {
+    return directText
+  }
+
+  if (!response || typeof response !== "object" || !("candidates" in response) || !Array.isArray(response.candidates)) {
+    return ""
+  }
+
+  for (const candidate of response.candidates) {
+    const candidateText = extractCandidateText(candidate)
+
+    if (candidateText) {
+      return candidateText
+    }
+  }
+
+  return ""
+}
+
+function extractCandidateText(value: unknown): string {
+  if (!value || typeof value !== "object") {
+    return ""
+  }
+
+  if ("text" in value && typeof value.text === "string" && value.text.trim()) {
+    return value.text.trim()
+  }
+
+  const parts =
+    "content" in value &&
+    value.content &&
+    typeof value.content === "object" &&
+    "parts" in value.content &&
+    Array.isArray(value.content.parts)
+      ? value.content.parts
+      : []
+
+  const text = parts
+    .map((part) => {
+      if (!part || typeof part !== "object") {
+        return ""
+      }
+
+      if ("text" in part && typeof part.text === "string") {
+        return part.text.trim()
+      }
+
+      return ""
+    })
+    .filter(Boolean)
+    .join("\n")
+
+  return text.trim()
+}
+
+function createGeminiNoTextError(response: unknown): ExternalServiceError {
+  const diagnosis = diagnoseGeminiNoTextResponse(response)
+  return new ExternalServiceError(diagnosis.message, diagnosis.statusCode)
+}
+
+function diagnoseGeminiNoTextResponse(response: unknown): { message: string; statusCode: number } {
+  const details: string[] = []
+  let statusCode = 502
+  let isBlocked = false
+  let isTransient = false
+
+  if (response && typeof response === "object") {
+    if ("promptFeedback" in response && response.promptFeedback && typeof response.promptFeedback === "object") {
+      const promptFeedback = response.promptFeedback as {
+        blockReason?: unknown
+        blockReasonMessage?: unknown
+      }
+
+      if (typeof promptFeedback.blockReason === "string" && promptFeedback.blockReason.trim()) {
+        isBlocked = true
+        details.push(`blockReason=${promptFeedback.blockReason.trim()}`)
+      }
+
+      if (typeof promptFeedback.blockReasonMessage === "string" && promptFeedback.blockReasonMessage.trim()) {
+        details.push(`blockReasonMessage=${promptFeedback.blockReasonMessage.trim()}`)
+      }
+    }
+
+    if ("candidates" in response && Array.isArray(response.candidates) && response.candidates.length > 0) {
+      const candidate = response.candidates[0]
+
+      if (candidate && typeof candidate === "object") {
+        const candidateData = candidate as {
+          finishReason?: unknown
+          finishMessage?: unknown
+          safetyRatings?: unknown
+        }
+
+        if (typeof candidateData.finishReason === "string" && candidateData.finishReason.trim()) {
+          const finishReason = candidateData.finishReason.trim()
+          details.push(`finishReason=${finishReason}`)
+
+          if (["MAX_TOKENS", "FINISH_REASON_UNSPECIFIED", "OTHER"].includes(finishReason)) {
+            isTransient = true
+          }
+
+          if (finishReason === "SAFETY") {
+            isBlocked = true
+          }
+        }
+
+        if (typeof candidateData.finishMessage === "string" && candidateData.finishMessage.trim()) {
+          details.push(`finishMessage=${candidateData.finishMessage.trim()}`)
+
+          if (/timeout|timed out|deadline exceeded|temporarily unavailable|unavailable/i.test(candidateData.finishMessage)) {
+            isTransient = true
+          }
+        }
+
+        const safetySummary = summarizeGeminiSafetyRatings(candidateData.safetyRatings)
+
+        if (safetySummary) {
+          details.push(`safety=${safetySummary}`)
+        }
+      }
+    } else {
+      details.push("candidates=0")
+      isTransient = true
+    }
+  }
+
+  if (isBlocked) {
+    statusCode = 502
+  } else if (isTransient) {
+    statusCode = 503
+  }
+
+  const detailText = details.length > 0 ? ` Диагностика: ${details.join("; ")}.` : ""
+  const message = isBlocked
+    ? `Gemini не вернул текст при создании краткого содержания из-за ограничений модели.${detailText}`
+    : isTransient
+      ? `Gemini не вернул текст при создании краткого содержания. Используем резервную обработку.${detailText}`
+      : `Gemini вернул пустой ответ при создании краткого содержания.${detailText}`
+
+  return { message, statusCode }
+}
+
+function summarizeGeminiSafetyRatings(value: unknown): string {
+  if (!Array.isArray(value)) {
+    return ""
+  }
+
+  return value
+    .map((rating) => {
+      if (!rating || typeof rating !== "object") {
+        return ""
+      }
+
+      const category = "category" in rating && typeof rating.category === "string" ? rating.category.trim() : ""
+      const probability =
+        "probability" in rating && typeof rating.probability === "string" ? rating.probability.trim() : ""
+      const blocked = "blocked" in rating && typeof rating.blocked === "boolean" ? rating.blocked : false
+
+      if (!category && !probability && !blocked) {
+        return ""
+      }
+
+      return [category, probability, blocked ? "blocked" : ""].filter(Boolean).join(":")
+    })
+    .filter(Boolean)
+    .join(", ")
 }
 
 function buildTranscriptFallbackSummary(transcript: string): string {
@@ -1295,7 +1466,7 @@ function isRetryableFetchError(error: unknown): boolean {
 
 function isRetryableGeminiError(error: unknown): boolean {
   if (error instanceof ExternalServiceError) {
-    return false
+    return error.statusCode === 503 || error.statusCode === 504
   }
 
   if (!error || typeof error !== "object") {
