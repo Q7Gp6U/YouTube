@@ -3,7 +3,6 @@ import { z } from "zod"
 
 import type { Database, Json } from "@/lib/database.types"
 import {
-  checkRateLimit,
   isTrustedOrigin,
   MAX_JSON_REQUEST_BYTES,
 } from "@/lib/request-security"
@@ -34,6 +33,10 @@ const POLL_RATE_LIMIT = {
   limit: 180,
   windowMs: 10 * 60 * 1_000,
 }
+const EXTERNAL_SERVICE_UNAVAILABLE_MESSAGE = "Сервис обработки видео временно недоступен. Попробуйте чуть позже."
+const EXTERNAL_SERVICE_RATE_LIMIT_MESSAGE = "Сервис обработки видео временно ограничил запросы. Попробуйте чуть позже."
+const SUMMARY_FAILED_MESSAGE = "Не удалось завершить обработку видео. Попробуйте еще раз чуть позже."
+const RATE_LIMIT_TEMPORARY_ERROR_MESSAGE = "Не удалось временно проверить лимит запросов. Попробуйте чуть позже."
 
 const summaryRequestSchema = z.discriminatedUnion("action", [
   z
@@ -55,6 +58,13 @@ type SupabaseClient = Awaited<ReturnType<typeof createServerSupabaseClient>>
 type CreateSummaryJobResult = Database["public"]["Functions"]["create_summary_job"]["Returns"][number]
 type CompleteSummaryJobResult = Database["public"]["Functions"]["complete_summary_job"]["Returns"][number]
 type FailSummaryJobResult = Database["public"]["Functions"]["fail_summary_job"]["Returns"][number]
+type ConsumeSummaryRateLimitResult = Database["public"]["Functions"]["consume_summary_rate_limit"]["Returns"][number]
+type SummaryAction = "start" | "poll"
+type SummaryRateLimitResult = {
+  allowed: boolean
+  retryAfterSeconds: number
+  remaining: number
+}
 type RpcResult<T> = {
   data: T[] | null
   error: {
@@ -65,12 +75,21 @@ type RpcResult<T> = {
 class RouteError extends Error {
   statusCode: number
   creditsRemaining?: number
+  publicMessage: string
 
-  constructor(message: string, statusCode: number, creditsRemaining?: number) {
+  constructor(
+    message: string,
+    statusCode: number,
+    creditsRemaining?: number,
+    options?: {
+      publicMessage?: string
+    },
+  ) {
     super(message)
     this.name = "RouteError"
     this.statusCode = statusCode
     this.creditsRemaining = creditsRemaining
+    this.publicMessage = options?.publicMessage ?? message
   }
 }
 
@@ -80,7 +99,7 @@ export async function POST(request: Request) {
       return jsonError("Запрос должен быть в формате JSON.", 415)
     }
 
-    if (!isTrustedOrigin(request)) {
+    if (!isTrustedOrigin(request, { allowMissingOrigin: false })) {
       return jsonError("Запрос отклонен политикой origin.", 403)
     }
 
@@ -107,7 +126,7 @@ export async function POST(request: Request) {
     }
 
     const body = parsedBody.data
-    const rateLimit = checkRateLimit(`${body.action}:${user.id}`, body.action === "start" ? START_RATE_LIMIT : POLL_RATE_LIMIT)
+    const rateLimit = await checkSummaryRateLimit(supabase, user.id, body.action)
 
     if (!rateLimit.allowed) {
       return jsonError("Слишком много запросов. Повторите попытку чуть позже.", 429, undefined, {
@@ -137,12 +156,16 @@ export async function POST(request: Request) {
       return jsonError("Тело запроса должно содержать корректный JSON-объект.", 400)
     }
 
+    if (error instanceof Error && error.message === "body-too-large") {
+      return jsonError("Тело запроса слишком большое для этого метода.", 413)
+    }
+
     if (error instanceof RouteError) {
-      return jsonError(error.message, error.statusCode, error.creditsRemaining)
+      return jsonError(error.publicMessage, error.statusCode, error.creditsRemaining)
     }
 
     if (isExternalServiceError(error)) {
-      return jsonError(error.message, error.statusCode)
+      return jsonError(getPublicExternalErrorMessage(error), error.statusCode)
     }
 
     console.error("Unexpected summarize route error", error)
@@ -157,6 +180,7 @@ async function handleStartRequest(
 ): Promise<SummaryCompletedResponse | SummaryProcessingResponse> {
   const normalizedUrl = normalizeYouTubeUrl(rawUrl)
   const reservation = await createSummaryJobReservation(supabase, rawUrl, normalizedUrl)
+  let shouldRefundOnFailure = true
 
   if (!reservation.was_created) {
     return {
@@ -169,15 +193,16 @@ async function handleStartRequest(
 
   try {
     const result = await startVideoSummary(rawUrl)
+    shouldRefundOnFailure = false
 
     if (result.status === "processing") {
       const { error } = await callRpc<{ job_id: string; status: string; video_title: string | null }>(
         supabase,
         "mark_summary_job_processing",
         {
-        p_job_id: reservation.job_id,
-        p_provider_job_id: result.jobId,
-        p_video_title: result.videoTitle,
+          p_job_id: reservation.job_id,
+          p_provider_job_id: result.jobId,
+          p_video_title: result.videoTitle,
         },
       )
 
@@ -200,17 +225,24 @@ async function handleStartRequest(
       creditsRemaining: completed.credits_remaining,
     }
   } catch (error) {
-    const failure = await failSummaryJob(supabase, reservation.job_id, getSummaryFailureMessage(error))
+    logSummaryProcessingError("start", error, reservation.job_id)
+
+    const publicMessage = getPublicProcessingErrorMessage(error)
+    const failure = await failSummaryJob(
+      supabase,
+      reservation.job_id,
+      publicMessage,
+      getInternalSummaryFailureDetails(error),
+      shouldRefundOnFailure,
+    )
 
     if (error instanceof RouteError) {
-      throw new RouteError(error.message, error.statusCode, failure.credits_remaining)
+      throw new RouteError(error.message, getPublicProcessingStatusCode(error), failure.credits_remaining, {
+        publicMessage,
+      })
     }
 
-    if (isExternalServiceError(error)) {
-      throw new RouteError(error.message, error.statusCode, failure.credits_remaining)
-    }
-
-    throw new RouteError(getSummaryFailureMessage(error), 500, failure.credits_remaining)
+    throw new RouteError(publicMessage, getPublicProcessingStatusCode(error), failure.credits_remaining)
   }
 }
 
@@ -229,7 +261,7 @@ async function handlePollRequest(
   }
 
   if (job.status === "failed") {
-    throw new RouteError(job.error_message || "Обработка завершилась с ошибкой.", 409, creditsRemaining)
+    throw new RouteError(job.error_message || SUMMARY_FAILED_MESSAGE, 409, creditsRemaining)
   }
 
   if (!job.provider_job_id) {
@@ -264,18 +296,22 @@ async function handlePollRequest(
       creditsRemaining: completed.credits_remaining,
     }
   } catch (error) {
-    const failure = await failSummaryJob(supabase, job.id, getSummaryFailureMessage(error))
+    logSummaryProcessingError("poll", error, job.id)
 
-    if (isExternalServiceError(error)) {
-      throw new RouteError(error.message, error.statusCode, failure.credits_remaining)
-    }
+    const publicMessage = getPublicProcessingErrorMessage(error)
+    const failure = await failSummaryJob(
+      supabase,
+      job.id,
+      publicMessage,
+      getInternalSummaryFailureDetails(error),
+      false,
+    )
 
-    throw new RouteError(getSummaryFailureMessage(error), 500, failure.credits_remaining)
+    throw new RouteError(publicMessage, getPublicProcessingStatusCode(error), failure.credits_remaining)
   }
 }
 
 async function createSummaryJobReservation(supabase: SupabaseClient, rawUrl: string, normalizedUrl: string) {
- 
   const { data, error } = await callRpc<CreateSummaryJobResult>(supabase, "create_summary_job", {
     p_original_url: rawUrl,
     p_normalized_url: normalizedUrl,
@@ -297,7 +333,7 @@ async function createSummaryJobReservation(supabase: SupabaseClient, rawUrl: str
   const [reservation] = data as CreateSummaryJobResult[]
 
   if (!reservation) {
-    throw new RouteError("Supabase не вернул данные по созданной задаче.", 500)
+    throw new RouteError("Не удалось создать задачу обработки видео.", 500)
   }
 
   return reservation
@@ -318,23 +354,34 @@ async function completeSummaryJob(
   })
 
   if (error) {
-    throw new RouteError("Не удалось завершить задачу и сохранить результат.", 500)
+    throw new RouteError("Не удалось завершить задачу обработки видео.", 500, undefined, {
+      publicMessage: SUMMARY_FAILED_MESSAGE,
+    })
   }
 
   const [completed] = data as CompleteSummaryJobResult[]
 
   if (!completed) {
-    throw new RouteError("Supabase не вернул итог по завершенной задаче.", 500)
+    throw new RouteError("Не удалось завершить задачу обработки видео.", 500, undefined, {
+      publicMessage: SUMMARY_FAILED_MESSAGE,
+    })
   }
 
   return completed
 }
 
-async function failSummaryJob(supabase: SupabaseClient, jobId: string, message: string) {
+async function failSummaryJob(
+  supabase: SupabaseClient,
+  jobId: string,
+  publicMessage: string,
+  internalMessage: string | null,
+  refundCredit: boolean,
+) {
   const { data, error } = await callRpc<FailSummaryJobResult>(supabase, "fail_summary_job", {
     p_job_id: jobId,
-    p_error_message: message,
-    p_refund_credit: true,
+    p_public_error_message: publicMessage,
+    p_internal_error_message: internalMessage,
+    p_refund_credit: refundCredit,
   })
 
   if (error) {
@@ -433,27 +480,229 @@ function parseEssenceFrame(value: Json | null): SummaryEssenceFrame | undefined 
 }
 
 async function parseRequestBody(request: Request): Promise<unknown> {
+  const rawBody = await readRequestBodyText(request)
+
+  if (!rawBody.trim()) {
+    throw new Error("invalid-body")
+  }
+
   let body: unknown
 
   try {
-    body = (await request.json()) as unknown
+    body = JSON.parse(rawBody) as unknown
   } catch {
     throw new Error("invalid-json")
   }
 
-  if (!body || typeof body !== "object") {
+  if (!body || typeof body !== "object" || Array.isArray(body)) {
     throw new Error("invalid-body")
   }
 
   return body
 }
 
-function getSummaryFailureMessage(error: unknown) {
-  if (error instanceof Error && error.message.trim()) {
-    return error.message
+async function readRequestBodyText(request: Request) {
+  const stream = request.body
+
+  if (!stream) {
+    throw new Error("invalid-body")
   }
 
-  return "Не удалось завершить обработку видео."
+  const reader = stream.getReader()
+  const decoder = new TextDecoder()
+  let bodySize = 0
+  let rawBody = ""
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read()
+
+      if (done) {
+        break
+      }
+
+      if (!value) {
+        continue
+      }
+
+      bodySize += value.byteLength
+
+      if (bodySize > MAX_JSON_REQUEST_BYTES) {
+        await reader.cancel("body-too-large")
+        throw new Error("body-too-large")
+      }
+
+      rawBody += decoder.decode(value, { stream: true })
+    }
+
+    rawBody += decoder.decode()
+  } finally {
+    reader.releaseLock()
+  }
+
+  return rawBody
+}
+
+async function checkSummaryRateLimit(
+  supabase: SupabaseClient,
+  userId: string,
+  action: SummaryAction,
+): Promise<SummaryRateLimitResult> {
+  const limitConfig = action === "start" ? START_RATE_LIMIT : POLL_RATE_LIMIT
+  const { data, error } = await callRpc<ConsumeSummaryRateLimitResult>(supabase, "consume_summary_rate_limit", {
+    p_action: action,
+    p_limit: limitConfig.limit,
+    p_window_seconds: Math.floor(limitConfig.windowMs / 1_000),
+  })
+
+  if (error) {
+    console.warn("Supabase summarize rate limit RPC failed", {
+      action,
+      userId,
+      message: error.message,
+    })
+
+    throw new RouteError(RATE_LIMIT_TEMPORARY_ERROR_MESSAGE, 503)
+  }
+
+  const [result] = data as ConsumeSummaryRateLimitResult[]
+
+  if (!result) {
+    console.warn("Supabase summarize rate limit returned no rows", {
+      action,
+      userId,
+    })
+
+    throw new RouteError(RATE_LIMIT_TEMPORARY_ERROR_MESSAGE, 503)
+  }
+
+  if (!isValidSummaryRateLimitResult(result)) {
+    console.warn("Supabase summarize rate limit returned malformed payload", {
+      action,
+      userId,
+      result,
+    })
+
+    throw new RouteError(RATE_LIMIT_TEMPORARY_ERROR_MESSAGE, 503)
+  }
+
+  return {
+    allowed: result.allowed,
+    retryAfterSeconds: result.retry_after_seconds,
+    remaining: result.remaining,
+  }
+}
+
+function getPublicProcessingErrorMessage(error: unknown) {
+  if (isExternalServiceError(error)) {
+    return getPublicExternalErrorMessage(error)
+  }
+
+  if (error instanceof RouteError) {
+    if (error.statusCode >= 500) {
+      return SUMMARY_FAILED_MESSAGE
+    }
+
+    if (error.publicMessage.trim()) {
+      return error.publicMessage
+    }
+  }
+
+  return SUMMARY_FAILED_MESSAGE
+}
+
+function getPublicExternalErrorMessage(error: { message: string; statusCode: number }) {
+  if (error.statusCode === 429) {
+    return EXTERNAL_SERVICE_RATE_LIMIT_MESSAGE
+  }
+
+  if (error.statusCode >= 500) {
+    return EXTERNAL_SERVICE_UNAVAILABLE_MESSAGE
+  }
+
+  return SUMMARY_FAILED_MESSAGE
+}
+
+function getInternalSummaryFailureDetails(error: unknown): string | null {
+  if (isExternalServiceError(error)) {
+    return `external:${error.statusCode}:${error.message}`
+  }
+
+  if (error instanceof RouteError) {
+    return error.message.trim() || null
+  }
+
+  if (error instanceof Error) {
+    return error.message.trim() || error.name
+  }
+
+  return null
+}
+
+function getPublicProcessingStatusCode(error: unknown) {
+  if (isExternalServiceError(error)) {
+    if (error.statusCode === 429) {
+      return 429
+    }
+
+    if (error.statusCode >= 500) {
+      return 503
+    }
+  }
+
+  if (error instanceof RouteError && error.statusCode < 500) {
+    return error.statusCode
+  }
+
+  return 500
+}
+
+function isValidSummaryRateLimitResult(value: unknown): value is ConsumeSummaryRateLimitResult {
+  if (!value || typeof value !== "object") {
+    return false
+  }
+
+  const candidate = value as Record<string, unknown>
+
+  return (
+    typeof candidate.allowed === "boolean" &&
+    typeof candidate.retry_after_seconds === "number" &&
+    Number.isFinite(candidate.retry_after_seconds) &&
+    candidate.retry_after_seconds >= 0 &&
+    typeof candidate.remaining === "number" &&
+    Number.isFinite(candidate.remaining) &&
+    candidate.remaining >= 0
+  )
+}
+
+function logSummaryProcessingError(stage: "start" | "poll", error: unknown, jobId: string) {
+  if (isExternalServiceError(error)) {
+    console.warn("Summary processing provider error", {
+      stage,
+      jobId,
+      statusCode: error.statusCode,
+      message: error.message,
+    })
+
+    return
+  }
+
+  if (error instanceof RouteError) {
+    console.warn("Summary processing route error", {
+      stage,
+      jobId,
+      statusCode: error.statusCode,
+      message: error.message,
+    })
+
+    return
+  }
+
+  console.error("Summary processing unexpected error", {
+    stage,
+    jobId,
+    error,
+  })
 }
 
 function jsonError(message: string, status: number, creditsRemaining?: number, headers?: HeadersInit) {

@@ -18,7 +18,6 @@ export const metadata: Metadata = {
   title: "Кратко и точка",
   description:
     "Краткое содержание YouTube-видео на русском: транскрипт приходит через Supadata, а суть формируется через Gemini.",
-  generator: "v0.app",
   icons: {
     icon: [
       {

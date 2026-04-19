@@ -71,8 +71,11 @@ export interface Database {
           transcript_language: string | null
           essence_frame: Json | null
           error_message: string | null
+          internal_error_message: string | null
           credits_reserved: number
+          refund_eligible: boolean
           refunded_at: string | null
+          cost_committed_at: string | null
           completed_at: string | null
           created_at: string
           updated_at: string
@@ -90,8 +93,11 @@ export interface Database {
           transcript_language?: string | null
           essence_frame?: Json | null
           error_message?: string | null
+          internal_error_message?: string | null
           credits_reserved?: number
+          refund_eligible?: boolean
           refunded_at?: string | null
+          cost_committed_at?: string | null
           completed_at?: string | null
           created_at?: string
           updated_at?: string
@@ -107,9 +113,35 @@ export interface Database {
           transcript_language?: string | null
           essence_frame?: Json | null
           error_message?: string | null
+          internal_error_message?: string | null
           credits_reserved?: number
+          refund_eligible?: boolean
           refunded_at?: string | null
+          cost_committed_at?: string | null
           completed_at?: string | null
+          updated_at?: string
+        }
+      }
+      summary_rate_limits: {
+        Row: {
+          user_id: string
+          action: string
+          window_started_at: string
+          request_count: number
+          created_at: string
+          updated_at: string
+        }
+        Insert: {
+          user_id: string
+          action: string
+          window_started_at: string
+          request_count?: number
+          created_at?: string
+          updated_at?: string
+        }
+        Update: {
+          request_count?: number
+          created_at?: string
           updated_at?: string
         }
       }
@@ -162,14 +194,27 @@ export interface Database {
       fail_summary_job: {
         Args: {
           p_job_id: string
-          p_error_message: string
+          p_public_error_message: string
           p_refund_credit?: boolean
+          p_internal_error_message?: string | null
         }
         Returns: {
           job_id: string
           status: string
           credits_remaining: number
           refunded: boolean
+        }[]
+      }
+      consume_summary_rate_limit: {
+        Args: {
+          p_action: string
+          p_limit: number
+          p_window_seconds: number
+        }
+        Returns: {
+          allowed: boolean
+          retry_after_seconds: number
+          remaining: number
         }[]
       }
     }

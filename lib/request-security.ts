@@ -14,6 +14,10 @@ const MAX_RATE_LIMIT_BUCKETS = 5_000
 
 export const MAX_JSON_REQUEST_BYTES = 4_096
 
+type TrustedOriginOptions = {
+  allowMissingOrigin?: boolean
+}
+
 export function checkRateLimit(
   key: string,
   options: {
@@ -77,14 +81,29 @@ export function getClientIp(request: Request): string {
   return "unknown"
 }
 
-export function isTrustedOrigin(request: Request): boolean {
-  const origin = request.headers.get("origin")
+export function isTrustedOrigin(request: Request, options: TrustedOriginOptions = {}): boolean {
+  const origin = request.headers.get("origin")?.trim()
 
   if (!origin) {
-    return true
+    return options.allowMissingOrigin ?? true
+  }
+
+  const normalizedOrigin = normalizeOrigin(origin)
+
+  if (!normalizedOrigin) {
+    return false
   }
 
   const allowedOrigins = new Set<string>()
+  const configuredOrigins = getConfiguredAllowedOrigins()
+
+  for (const configuredOrigin of configuredOrigins) {
+    allowedOrigins.add(configuredOrigin)
+  }
+
+  if (isProductionEnvironment()) {
+    return configuredOrigins.length > 0 && allowedOrigins.has(normalizedOrigin)
+  }
 
   try {
     allowedOrigins.add(new URL(request.url).origin)
@@ -92,16 +111,67 @@ export function isTrustedOrigin(request: Request): boolean {
     return false
   }
 
-  const forwardedHost = request.headers.get("x-forwarded-host")?.trim() || request.headers.get("host")?.trim()
-  const forwardedProto = request.headers.get("x-forwarded-proto")?.trim() || "https"
+  const hostOrigin = getHostOrigin(request)
 
-  if (forwardedHost) {
-    allowedOrigins.add(`${forwardedProto}://${forwardedHost}`)
+  if (hostOrigin) {
+    allowedOrigins.add(hostOrigin)
   }
 
-  return allowedOrigins.has(origin)
+  return allowedOrigins.has(normalizedOrigin)
 }
 
+function getConfiguredAllowedOrigins(): string[] {
+  const configuredOrigins = [
+    process.env.APP_URL,
+    process.env.NEXT_PUBLIC_APP_URL,
+    process.env.NEXT_PUBLIC_SITE_URL,
+    normalizeVercelUrl(process.env.VERCEL_PROJECT_PRODUCTION_URL),
+    normalizeVercelUrl(process.env.VERCEL_URL),
+  ]
+
+  return configuredOrigins
+    .map((value) => normalizeOrigin(value))
+    .filter((value): value is string => value !== null)
+}
+
+function isProductionEnvironment() {
+  return process.env.NODE_ENV === "production"
+}
+
+function normalizeOrigin(value: string | undefined): string | null {
+  if (!value) {
+    return null
+  }
+
+  try {
+    return new URL(value.trim()).origin
+  } catch {
+    return null
+  }
+}
+
+function normalizeVercelUrl(value: string | undefined): string | undefined {
+  if (!value) {
+    return undefined
+  }
+
+  return value.startsWith("http://") || value.startsWith("https://") ? value : `https://${value}`
+}
+
+function getHostOrigin(request: Request): string | null {
+  const host = request.headers.get("host")?.trim()
+
+  if (!host) {
+    return null
+  }
+
+  try {
+    const protocol = new URL(request.url).protocol
+    return new URL(`${protocol}//${host}`).origin
+  } catch {
+    return null
+  }
+}
 function cleanupExpiredBuckets(now: number) {
   if (rateLimitBuckets.size < MAX_RATE_LIMIT_BUCKETS) {
     return
