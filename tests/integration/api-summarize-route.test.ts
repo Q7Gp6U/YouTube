@@ -198,4 +198,180 @@ describe("app/api/summarize/route", () => {
       creditsRemaining: 5,
     })
   })
+
+  it("keeps a new job processing when provider start hits a transient 429", async () => {
+    const supabase = createMockSupabase({
+      rpcMap: {
+        consume_summary_rate_limit: {
+          data: [{ allowed: true, retry_after_seconds: 0, remaining: 11 }],
+          error: null,
+        },
+        create_summary_job: {
+          data: [{ job_id: "job-429", was_created: true, credits_remaining: 8, video_title: null }],
+          error: null,
+        },
+        schedule_summary_job_retry: {
+          data: [{ job_id: "job-429", status: "pending", next_provider_attempt_at: "2026-04-19T15:27:00.000Z", provider_attempt_count: 1 }],
+          error: null,
+        },
+      },
+    })
+    createServerSupabaseClient.mockResolvedValue(supabase)
+    startVideoSummary.mockRejectedValue(Object.assign(new Error("Supadata limited requests"), { statusCode: 429 }))
+    const { POST } = await import("@/app/api/summarize/route")
+
+    const response = await POST(createJsonRequest({ action: "start", url: "https://youtu.be/dQw4w9WgXcQ" }))
+    const payload = await response.json()
+
+    expect(response.status).toBe(202)
+    expect(payload).toMatchObject({
+      status: "processing",
+      jobId: "job-429",
+      creditsRemaining: 8,
+    })
+    expect(supabase.rpc).toHaveBeenCalledWith(
+      "schedule_summary_job_retry",
+      expect.objectContaining({
+        p_job_id: "job-429",
+        p_public_error_message: expect.any(String),
+      }),
+    )
+    expect(supabase.rpc).not.toHaveBeenCalledWith("fail_summary_job", expect.anything())
+  })
+
+  it("returns processing before retry window without calling the provider", async () => {
+    createServerSupabaseClient.mockResolvedValue(
+      createMockSupabase({
+        rpcMap: {
+          consume_summary_rate_limit: {
+            data: [{ allowed: true, retry_after_seconds: 0, remaining: 179 }],
+            error: null,
+          },
+        },
+        summaryJob: {
+          id: "550e8400-e29b-41d4-a716-446655440001",
+          original_url: "https://youtu.be/dQw4w9WgXcQ",
+          normalized_url: "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+          status: "pending",
+          provider_job_id: null,
+          video_title: null,
+          next_provider_attempt_at: "2999-01-01T00:00:00.000Z",
+          provider_attempt_count: 1,
+        },
+        profile: { credits_balance: 5 },
+      }),
+    )
+    const { POST } = await import("@/app/api/summarize/route")
+
+    const response = await POST(createJsonRequest({ action: "poll", jobId: "550e8400-e29b-41d4-a716-446655440001" }))
+    const payload = await response.json()
+
+    expect(response.status).toBe(202)
+    expect(startVideoSummary).not.toHaveBeenCalled()
+    expect(pollVideoSummary).not.toHaveBeenCalled()
+    expect(payload).toMatchObject({
+      status: "processing",
+      jobId: "550e8400-e29b-41d4-a716-446655440001",
+      creditsRemaining: 5,
+    })
+  })
+
+  it("retries provider start from poll after the backoff window passes", async () => {
+    const supabase = createMockSupabase({
+      rpcMap: {
+        consume_summary_rate_limit: {
+          data: [{ allowed: true, retry_after_seconds: 0, remaining: 179 }],
+          error: null,
+        },
+        mark_summary_job_processing: {
+          data: [{ job_id: "550e8400-e29b-41d4-a716-446655440002", status: "processing", video_title: "Видео в очереди" }],
+          error: null,
+        },
+      },
+      summaryJob: {
+        id: "550e8400-e29b-41d4-a716-446655440002",
+        original_url: "https://youtu.be/dQw4w9WgXcQ",
+        normalized_url: "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+        status: "pending",
+        provider_job_id: null,
+        video_title: null,
+        next_provider_attempt_at: "2000-01-01T00:00:00.000Z",
+        provider_attempt_count: 1,
+      },
+      profile: { credits_balance: 5 },
+    })
+    createServerSupabaseClient.mockResolvedValue(supabase)
+    startVideoSummary.mockResolvedValue({
+      status: "processing",
+      jobId: "provider-job-2",
+      videoTitle: "Видео в очереди",
+    })
+    const { POST } = await import("@/app/api/summarize/route")
+
+    const response = await POST(createJsonRequest({ action: "poll", jobId: "550e8400-e29b-41d4-a716-446655440002" }))
+    const payload = await response.json()
+
+    expect(response.status).toBe(202)
+    expect(startVideoSummary).toHaveBeenCalledWith("https://youtu.be/dQw4w9WgXcQ")
+    expect(pollVideoSummary).not.toHaveBeenCalled()
+    expect(supabase.rpc).toHaveBeenCalledWith(
+      "mark_summary_job_processing",
+      expect.objectContaining({
+        p_job_id: "550e8400-e29b-41d4-a716-446655440002",
+        p_provider_job_id: "provider-job-2",
+      }),
+    )
+    expect(payload).toMatchObject({
+      status: "processing",
+      jobId: "550e8400-e29b-41d4-a716-446655440002",
+      creditsRemaining: 5,
+    })
+  })
+
+  it("keeps provider poll jobs alive when the provider returns a transient 429", async () => {
+    const supabase = createMockSupabase({
+      rpcMap: {
+        consume_summary_rate_limit: {
+          data: [{ allowed: true, retry_after_seconds: 0, remaining: 179 }],
+          error: null,
+        },
+        schedule_summary_job_retry: {
+          data: [{ job_id: "550e8400-e29b-41d4-a716-446655440003", status: "processing", next_provider_attempt_at: "2026-04-19T15:27:00.000Z", provider_attempt_count: 2 }],
+          error: null,
+        },
+      },
+      summaryJob: {
+        id: "550e8400-e29b-41d4-a716-446655440003",
+        original_url: "https://youtu.be/dQw4w9WgXcQ",
+        normalized_url: "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+        status: "processing",
+        provider_job_id: "provider-job-3",
+        video_title: "Видео обрабатывается",
+        next_provider_attempt_at: null,
+        provider_attempt_count: 1,
+      },
+      profile: { credits_balance: 5 },
+    })
+    createServerSupabaseClient.mockResolvedValue(supabase)
+    pollVideoSummary.mockRejectedValue(Object.assign(new Error("Supadata limited requests"), { statusCode: 429 }))
+    const { POST } = await import("@/app/api/summarize/route")
+
+    const response = await POST(createJsonRequest({ action: "poll", jobId: "550e8400-e29b-41d4-a716-446655440003" }))
+    const payload = await response.json()
+
+    expect(response.status).toBe(202)
+    expect(payload).toMatchObject({
+      status: "processing",
+      jobId: "550e8400-e29b-41d4-a716-446655440003",
+      creditsRemaining: 5,
+    })
+    expect(supabase.rpc).toHaveBeenCalledWith(
+      "schedule_summary_job_retry",
+      expect.objectContaining({
+        p_job_id: "550e8400-e29b-41d4-a716-446655440003",
+        p_public_error_message: expect.any(String),
+      }),
+    )
+    expect(supabase.rpc).not.toHaveBeenCalledWith("fail_summary_job", expect.anything())
+  })
 })

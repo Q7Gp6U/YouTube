@@ -72,6 +72,8 @@ export interface Database {
           essence_frame: Json | null
           error_message: string | null
           internal_error_message: string | null
+          provider_attempt_count: number
+          next_provider_attempt_at: string | null
           credits_reserved: number
           refund_eligible: boolean
           refunded_at: string | null
@@ -94,6 +96,8 @@ export interface Database {
           essence_frame?: Json | null
           error_message?: string | null
           internal_error_message?: string | null
+          provider_attempt_count?: number
+          next_provider_attempt_at?: string | null
           credits_reserved?: number
           refund_eligible?: boolean
           refunded_at?: string | null
@@ -114,6 +118,8 @@ export interface Database {
           essence_frame?: Json | null
           error_message?: string | null
           internal_error_message?: string | null
+          provider_attempt_count?: number
+          next_provider_attempt_at?: string | null
           credits_reserved?: number
           refund_eligible?: boolean
           refunded_at?: string | null
@@ -203,6 +209,20 @@ export interface Database {
           status: string
           credits_remaining: number
           refunded: boolean
+        }[]
+      }
+      schedule_summary_job_retry: {
+        Args: {
+          p_job_id: string
+          p_next_provider_attempt_at: string
+          p_public_error_message?: string | null
+          p_internal_error_message?: string | null
+        }
+        Returns: {
+          job_id: string
+          status: string
+          next_provider_attempt_at: string | null
+          provider_attempt_count: number
         }[]
       }
       consume_summary_rate_limit: {

@@ -37,6 +37,9 @@ const EXTERNAL_SERVICE_UNAVAILABLE_MESSAGE = "Сервис обработки в
 const EXTERNAL_SERVICE_RATE_LIMIT_MESSAGE = "Сервис обработки видео временно ограничил запросы. Попробуйте чуть позже."
 const SUMMARY_FAILED_MESSAGE = "Не удалось завершить обработку видео. Попробуйте еще раз чуть позже."
 const RATE_LIMIT_TEMPORARY_ERROR_MESSAGE = "Не удалось временно проверить лимит запросов. Попробуйте чуть позже."
+const PROCESSING_VIDEO_TITLE = "Видео обрабатывается"
+const PROVIDER_RETRY_BASE_DELAY_MS = 30_000
+const PROVIDER_RETRY_MAX_DELAY_MS = 15 * 60 * 1_000
 
 const summaryRequestSchema = z.discriminatedUnion("action", [
   z
@@ -58,6 +61,7 @@ type SupabaseClient = Awaited<ReturnType<typeof createServerSupabaseClient>>
 type CreateSummaryJobResult = Database["public"]["Functions"]["create_summary_job"]["Returns"][number]
 type CompleteSummaryJobResult = Database["public"]["Functions"]["complete_summary_job"]["Returns"][number]
 type FailSummaryJobResult = Database["public"]["Functions"]["fail_summary_job"]["Returns"][number]
+type ScheduleSummaryJobRetryResult = Database["public"]["Functions"]["schedule_summary_job_retry"]["Returns"][number]
 type ConsumeSummaryRateLimitResult = Database["public"]["Functions"]["consume_summary_rate_limit"]["Returns"][number]
 type SummaryAction = "start" | "poll"
 type SummaryRateLimitResult = {
@@ -211,10 +215,7 @@ async function handleStartRequest(
       }
 
       return {
-        status: "processing",
-        jobId: reservation.job_id,
-        videoTitle: result.videoTitle,
-        creditsRemaining: reservation.credits_remaining,
+        ...buildProcessingResponse(reservation.job_id, reservation.credits_remaining, result.videoTitle),
       }
     }
 
@@ -226,6 +227,17 @@ async function handleStartRequest(
     }
   } catch (error) {
     logSummaryProcessingError("start", error, reservation.job_id)
+
+    if (isTransientProviderError(error)) {
+      await scheduleSummaryJobRetry(supabase, {
+        jobId: reservation.job_id,
+        providerAttemptCount: 0,
+        publicMessage: getPublicExternalErrorMessage(error),
+        internalMessage: getInternalSummaryFailureDetails(error),
+      })
+
+      return buildProcessingResponse(reservation.job_id, reservation.credits_remaining, reservation.video_title)
+    }
 
     const publicMessage = getPublicProcessingErrorMessage(error)
     const failure = await failSummaryJob(
@@ -264,13 +276,12 @@ async function handlePollRequest(
     throw new RouteError(job.error_message || SUMMARY_FAILED_MESSAGE, 409, creditsRemaining)
   }
 
+  if (shouldWaitForProviderRetry(job)) {
+    return buildProcessingResponse(job.id, creditsRemaining, job.video_title)
+  }
+
   if (!job.provider_job_id) {
-    return {
-      status: "processing",
-      jobId: job.id,
-      videoTitle: job.video_title || "Видео обрабатывается",
-      creditsRemaining,
-    }
+    return retrySummaryStart(supabase, job, creditsRemaining)
   }
 
   try {
@@ -281,12 +292,7 @@ async function handlePollRequest(
     })
 
     if (result.status === "processing") {
-      return {
-        status: "processing",
-        jobId: job.id,
-        videoTitle: result.videoTitle,
-        creditsRemaining,
-      }
+      return buildProcessingResponse(job.id, creditsRemaining, result.videoTitle)
     }
 
     const completed = await completeSummaryJob(supabase, job.id, result)
@@ -298,6 +304,17 @@ async function handlePollRequest(
   } catch (error) {
     logSummaryProcessingError("poll", error, job.id)
 
+    if (isTransientProviderError(error)) {
+      await scheduleSummaryJobRetry(supabase, {
+        jobId: job.id,
+        providerAttemptCount: job.provider_attempt_count,
+        publicMessage: getPublicExternalErrorMessage(error),
+        internalMessage: getInternalSummaryFailureDetails(error),
+      })
+
+      return buildProcessingResponse(job.id, creditsRemaining, job.video_title)
+    }
+
     const publicMessage = getPublicProcessingErrorMessage(error)
     const failure = await failSummaryJob(
       supabase,
@@ -305,6 +322,68 @@ async function handlePollRequest(
       publicMessage,
       getInternalSummaryFailureDetails(error),
       false,
+    )
+
+    throw new RouteError(publicMessage, getPublicProcessingStatusCode(error), failure.credits_remaining)
+  }
+}
+
+async function retrySummaryStart(
+  supabase: SupabaseClient,
+  job: SummaryJobRow,
+  creditsRemaining: number,
+): Promise<SummaryCompletedResponse | SummaryProcessingResponse> {
+  let shouldRefundOnFailure = true
+
+  try {
+    const result = await startVideoSummary(job.original_url)
+    shouldRefundOnFailure = false
+
+    if (result.status === "processing") {
+      const { error } = await callRpc<{ job_id: string; status: string; video_title: string | null }>(
+        supabase,
+        "mark_summary_job_processing",
+        {
+          p_job_id: job.id,
+          p_provider_job_id: result.jobId,
+          p_video_title: result.videoTitle,
+        },
+      )
+
+      if (error) {
+        throw new RouteError("Не удалось сохранить состояние обработки видео.", 500, creditsRemaining)
+      }
+
+      return buildProcessingResponse(job.id, creditsRemaining, result.videoTitle)
+    }
+
+    const completed = await completeSummaryJob(supabase, job.id, result)
+
+    return {
+      ...result,
+      creditsRemaining: completed.credits_remaining,
+    }
+  } catch (error) {
+    logSummaryProcessingError("start", error, job.id)
+
+    if (isTransientProviderError(error)) {
+      await scheduleSummaryJobRetry(supabase, {
+        jobId: job.id,
+        providerAttemptCount: job.provider_attempt_count,
+        publicMessage: getPublicExternalErrorMessage(error),
+        internalMessage: getInternalSummaryFailureDetails(error),
+      })
+
+      return buildProcessingResponse(job.id, creditsRemaining, job.video_title)
+    }
+
+    const publicMessage = getPublicProcessingErrorMessage(error)
+    const failure = await failSummaryJob(
+      supabase,
+      job.id,
+      publicMessage,
+      getInternalSummaryFailureDetails(error),
+      shouldRefundOnFailure,
     )
 
     throw new RouteError(publicMessage, getPublicProcessingStatusCode(error), failure.credits_remaining)
@@ -431,6 +510,36 @@ async function getCurrentCredits(supabase: SupabaseClient) {
   return profile?.credits_balance ?? 0
 }
 
+async function scheduleSummaryJobRetry(
+  supabase: SupabaseClient,
+  options: {
+    jobId: string
+    providerAttemptCount: number
+    publicMessage: string
+    internalMessage: string | null
+  },
+) {
+  const nextProviderAttemptAt = new Date(Date.now() + calculateProviderRetryDelayMs(options.providerAttemptCount)).toISOString()
+  const { data, error } = await callRpc<ScheduleSummaryJobRetryResult>(supabase, "schedule_summary_job_retry", {
+    p_job_id: options.jobId,
+    p_next_provider_attempt_at: nextProviderAttemptAt,
+    p_public_error_message: options.publicMessage,
+    p_internal_error_message: options.internalMessage,
+  })
+
+  if (error) {
+    throw new RouteError("Не удалось запланировать повтор обработки видео.", 500)
+  }
+
+  const [scheduled] = data as ScheduleSummaryJobRetryResult[]
+
+  if (!scheduled) {
+    throw new RouteError("Не удалось запланировать повтор обработки видео.", 500)
+  }
+
+  return scheduled
+}
+
 function buildCompletedResponseFromJob(job: SummaryJobRow, creditsRemaining: number): SummaryCompletedResponse {
   if (!job.summary || !job.model || !job.video_title) {
     throw new RouteError("Задача отмечена завершенной, но результат сохранен не полностью.", 500, creditsRemaining)
@@ -443,6 +552,19 @@ function buildCompletedResponseFromJob(job: SummaryJobRow, creditsRemaining: num
     model: job.model,
     transcriptLanguage: job.transcript_language ?? undefined,
     essenceFrame: parseEssenceFrame(job.essence_frame),
+    creditsRemaining,
+  }
+}
+
+function buildProcessingResponse(
+  jobId: string,
+  creditsRemaining: number,
+  videoTitle?: string | null,
+): SummaryProcessingResponse {
+  return {
+    status: "processing",
+    jobId,
+    videoTitle: videoTitle || PROCESSING_VIDEO_TITLE,
     creditsRemaining,
   }
 }
@@ -623,6 +745,44 @@ function getPublicExternalErrorMessage(error: { message: string; statusCode: num
   return SUMMARY_FAILED_MESSAGE
 }
 
+function isTransientProviderError(error: unknown): error is { message: string; statusCode: number } {
+  if (!isExternalServiceError(error)) {
+    return false
+  }
+
+  if (error.statusCode === 429 || error.statusCode === 503 || error.statusCode === 504) {
+    return true
+  }
+
+  if (error.statusCode !== 502) {
+    return false
+  }
+
+  const message = error.message.toLowerCase()
+
+  if (
+    message.includes("не смог вернуть транскрипт") ||
+    message.includes("вернул пустой транскрипт") ||
+    message.includes("принял задачу, но не вернул jobid")
+  ) {
+    return false
+  }
+
+  return [
+    "temporarily unavailable",
+    "service unavailable",
+    "timed out",
+    "timeout",
+    "deadline exceeded",
+    "не ответил вовремя",
+    "временно недоступ",
+    "ограничил запросы",
+    "вернул ошибку 502",
+    "вернул неожиданный ответ",
+    "вернул некорректный json",
+  ].some((fragment) => message.includes(fragment))
+}
+
 function getInternalSummaryFailureDetails(error: unknown): string | null {
   if (isExternalServiceError(error)) {
     return `external:${error.statusCode}:${error.message}`
@@ -655,6 +815,24 @@ function getPublicProcessingStatusCode(error: unknown) {
   }
 
   return 500
+}
+
+function shouldWaitForProviderRetry(job: Pick<SummaryJobRow, "next_provider_attempt_at">) {
+  const retryAtMs = parseTimestamp(job.next_provider_attempt_at)
+  return retryAtMs !== null && retryAtMs > Date.now()
+}
+
+function calculateProviderRetryDelayMs(providerAttemptCount: number) {
+  return Math.min(PROVIDER_RETRY_MAX_DELAY_MS, PROVIDER_RETRY_BASE_DELAY_MS * 2 ** Math.max(0, providerAttemptCount))
+}
+
+function parseTimestamp(value: string | null) {
+  if (!value) {
+    return null
+  }
+
+  const parsed = Date.parse(value)
+  return Number.isNaN(parsed) ? null : parsed
 }
 
 function isValidSummaryRateLimitResult(value: unknown): value is ConsumeSummaryRateLimitResult {
