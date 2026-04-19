@@ -8,6 +8,10 @@ export default async function AuthPage({
 }: {
   searchParams: Promise<{ error?: string }>
 }) {
+  if (process.env.NODE_ENV !== "production" && process.env.TEST_BYPASS_AUTH === "1") {
+    redirect("/")
+  }
+
   const supabase = await createServerSupabaseClient()
   const {
     data: { user },

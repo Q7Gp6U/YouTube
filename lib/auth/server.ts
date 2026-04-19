@@ -10,7 +10,26 @@ export type AuthenticatedAppUser = {
   creditsRemaining: number
 }
 
+function getBypassUserContext(): AuthenticatedAppUser | null {
+  if (process.env.NODE_ENV === "production" || process.env.TEST_BYPASS_AUTH !== "1") {
+    return null
+  }
+
+  return {
+    id: process.env.TEST_BYPASS_USER_ID?.trim() || "00000000-0000-4000-8000-000000000001",
+    email: process.env.TEST_BYPASS_USER_EMAIL?.trim() || "e2e@example.com",
+    displayName: process.env.TEST_BYPASS_USER_NAME?.trim() || "E2E User",
+    creditsRemaining: Number.parseInt(process.env.TEST_BYPASS_CREDITS?.trim() || "9", 10) || 9,
+  }
+}
+
 export async function getAuthenticatedUserContext(): Promise<AuthenticatedAppUser | null> {
+  const bypassUser = getBypassUserContext()
+
+  if (bypassUser) {
+    return bypassUser
+  }
+
   const supabase = await createServerSupabaseClient()
   const {
     data: { user },

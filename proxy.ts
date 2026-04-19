@@ -5,6 +5,12 @@ import { updateSession } from "@/lib/supabase/proxy"
 const PROTECTED_PATHS = new Set(["/"])
 
 export async function proxy(request: NextRequest) {
+  if (process.env.NODE_ENV !== "production" && process.env.TEST_BYPASS_AUTH === "1") {
+    return NextResponse.next({
+      request,
+    })
+  }
+
   const { response, user } = await updateSession(request)
   const { pathname } = request.nextUrl
 
