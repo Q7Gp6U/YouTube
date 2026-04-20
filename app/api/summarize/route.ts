@@ -41,6 +41,10 @@ const PROCESSING_VIDEO_TITLE = "Видео обрабатывается"
 const DEFAULT_PROCESSING_POLL_DELAY_MS = 12_000
 const PROVIDER_RETRY_BASE_DELAY_MS = 30_000
 const PROVIDER_RETRY_MAX_DELAY_MS = 15 * 60 * 1_000
+const MAX_PROVIDER_RETRY_COUNT = 5
+const MAX_SUMMARY_JOB_AGE_MS = 2 * 60 * 60 * 1_000
+const SUMMARY_RETRY_LIMIT_MESSAGE = "Не удалось завершить обработку видео после нескольких попыток. Запустите обработку заново чуть позже."
+const SUMMARY_STALE_JOB_MESSAGE = "Обработка видео заняла слишком много времени и была остановлена. Запустите видео заново."
 
 const summaryRequestSchema = z.discriminatedUnion("action", [
   z
@@ -188,7 +192,7 @@ async function handleStartRequest(
   let shouldRefundOnFailure = true
 
   if (!reservation.was_created) {
-    return buildProcessingResponse(reservation.job_id, reservation.credits_remaining, reservation.video_title)
+    return handlePollRequest(supabase, reservation.job_id)
   }
 
   try {
@@ -276,6 +280,20 @@ async function handlePollRequest(
     throw new RouteError(job.error_message || SUMMARY_FAILED_MESSAGE, 409, creditsRemaining)
   }
 
+  const terminalFailure = getTerminalJobFailure(job)
+
+  if (terminalFailure) {
+    const failure = await failSummaryJob(
+      supabase,
+      job.id,
+      terminalFailure.publicMessage,
+      terminalFailure.internalMessage,
+      shouldRefundTerminalSummaryJob(job),
+    )
+
+    throw new RouteError(terminalFailure.publicMessage, 409, failure.credits_remaining)
+  }
+
   if (shouldWaitForProviderRetry(job)) {
     return buildProcessingResponse(job.id, creditsRemaining, job.video_title, {
       nextPollAfterMs: getRemainingProviderRetryDelayMs(job),
@@ -307,6 +325,20 @@ async function handlePollRequest(
     logSummaryProcessingError("poll", error, job.id)
 
     if (isTransientProviderError(error)) {
+      const terminalRetryFailure = getProviderRetryLimitFailure(job)
+
+      if (terminalRetryFailure) {
+        const failure = await failSummaryJob(
+          supabase,
+          job.id,
+          terminalRetryFailure.publicMessage,
+          terminalRetryFailure.internalMessage,
+          shouldRefundTerminalSummaryJob(job),
+        )
+
+        throw new RouteError(terminalRetryFailure.publicMessage, 409, failure.credits_remaining)
+      }
+
       const nextPollAfterMs = calculateProviderRetryDelayMs(job.provider_attempt_count)
 
       await scheduleSummaryJobRetry(supabase, {
@@ -373,6 +405,20 @@ async function retrySummaryStart(
     logSummaryProcessingError("start", error, job.id)
 
     if (isTransientProviderError(error)) {
+      const terminalRetryFailure = getProviderRetryLimitFailure(job)
+
+      if (terminalRetryFailure) {
+        const failure = await failSummaryJob(
+          supabase,
+          job.id,
+          terminalRetryFailure.publicMessage,
+          terminalRetryFailure.internalMessage,
+          shouldRefundTerminalSummaryJob(job),
+        )
+
+        throw new RouteError(terminalRetryFailure.publicMessage, 409, failure.credits_remaining)
+      }
+
       const nextPollAfterMs = calculateProviderRetryDelayMs(job.provider_attempt_count)
 
       await scheduleSummaryJobRetry(supabase, {
@@ -785,6 +831,7 @@ function isTransientProviderError(error: unknown): error is { message: string; s
   return [
     "temporarily unavailable",
     "service unavailable",
+    "bad gateway",
     "timed out",
     "timeout",
     "deadline exceeded",
@@ -792,9 +839,52 @@ function isTransientProviderError(error: unknown): error is { message: string; s
     "временно недоступ",
     "ограничил запросы",
     "вернул ошибку 502",
-    "вернул неожиданный ответ",
-    "вернул некорректный json",
   ].some((fragment) => message.includes(fragment))
+}
+
+function getTerminalJobFailure(job: Pick<SummaryJobRow, "created_at" | "provider_attempt_count">) {
+  const retryLimitFailure = getExceededProviderRetryLimitFailure(job)
+
+  if (retryLimitFailure) {
+    return retryLimitFailure
+  }
+
+  const createdAtMs = parseTimestamp(job.created_at)
+
+  if (createdAtMs !== null && Date.now() - createdAtMs > MAX_SUMMARY_JOB_AGE_MS) {
+    return {
+      publicMessage: SUMMARY_STALE_JOB_MESSAGE,
+      internalMessage: `terminal:job_age_exceeded:${job.created_at}`,
+    }
+  }
+
+  return null
+}
+
+function getProviderRetryLimitFailure(job: Pick<SummaryJobRow, "provider_attempt_count">) {
+  if (job.provider_attempt_count < MAX_PROVIDER_RETRY_COUNT) {
+    return null
+  }
+
+  return {
+    publicMessage: SUMMARY_RETRY_LIMIT_MESSAGE,
+    internalMessage: `terminal:provider_retry_limit:${job.provider_attempt_count}`,
+  }
+}
+
+function getExceededProviderRetryLimitFailure(job: Pick<SummaryJobRow, "provider_attempt_count">) {
+  if (job.provider_attempt_count <= MAX_PROVIDER_RETRY_COUNT) {
+    return null
+  }
+
+  return {
+    publicMessage: SUMMARY_RETRY_LIMIT_MESSAGE,
+    internalMessage: `terminal:provider_retry_limit:${job.provider_attempt_count}`,
+  }
+}
+
+function shouldRefundTerminalSummaryJob(job: Pick<SummaryJobRow, "provider_job_id">) {
+  return !job.provider_job_id
 }
 
 function getInternalSummaryFailureDetails(error: unknown): string | null {

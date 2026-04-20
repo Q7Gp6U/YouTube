@@ -164,6 +164,58 @@ describe("app/api/summarize/route", () => {
     })
   })
 
+  it("resumes an existing job on repeated start instead of blindly returning processing", async () => {
+    createServerSupabaseClient.mockResolvedValue(
+      createMockSupabase({
+        rpcMap: {
+          consume_summary_rate_limit: {
+            data: [{ allowed: true, retry_after_seconds: 0, remaining: 11 }],
+            error: null,
+          },
+          create_summary_job: {
+            data: [{ job_id: "550e8400-e29b-41d4-a716-446655440010", was_created: false, credits_remaining: 8, video_title: null }],
+            error: null,
+          },
+          complete_summary_job: {
+            data: [{ job_id: "550e8400-e29b-41d4-a716-446655440010", status: "completed", credits_remaining: 6 }],
+            error: null,
+          },
+        },
+        summaryJob: {
+          id: "550e8400-e29b-41d4-a716-446655440010",
+          original_url: "https://youtu.be/dQw4w9WgXcQ",
+          normalized_url: "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+          status: "pending",
+          provider_job_id: null,
+          video_title: null,
+          next_provider_attempt_at: null,
+          provider_attempt_count: 0,
+          created_at: "2026-04-20T18:00:00.000Z",
+        },
+        profile: { credits_balance: 6 },
+      }),
+    )
+    startVideoSummary.mockResolvedValue({
+      status: "completed",
+      summary: "Кратко: Resume.\n\nГлавное:\n- Раз\n- Два\n- Три\n- Четыре\n\nВывод: Готово.",
+      videoTitle: "Возобновленное видео",
+      model: "gemini-test",
+      transcriptLanguage: "ru",
+    })
+    const { POST } = await import("@/app/api/summarize/route")
+
+    const response = await POST(createJsonRequest({ action: "start", url: "https://youtu.be/dQw4w9WgXcQ" }))
+    const payload = await response.json()
+
+    expect(response.status).toBe(200)
+    expect(startVideoSummary).toHaveBeenCalledWith("https://youtu.be/dQw4w9WgXcQ")
+    expect(payload).toMatchObject({
+      status: "completed",
+      videoTitle: "Возобновленное видео",
+      creditsRemaining: 6,
+    })
+  })
+
   it("returns a completed poll result from a stored job without calling the provider", async () => {
     createServerSupabaseClient.mockResolvedValue(
       createMockSupabase({
@@ -373,5 +425,94 @@ describe("app/api/summarize/route", () => {
       }),
     )
     expect(supabase.rpc).not.toHaveBeenCalledWith("fail_summary_job", expect.anything())
+  })
+
+  it("fails a job when transient provider retries hit the terminal limit", async () => {
+    const supabase = createMockSupabase({
+      rpcMap: {
+        consume_summary_rate_limit: {
+          data: [{ allowed: true, retry_after_seconds: 0, remaining: 179 }],
+          error: null,
+        },
+        fail_summary_job: {
+          data: [{ job_id: "550e8400-e29b-41d4-a716-446655440011", status: "failed", credits_remaining: 5, refunded: false }],
+          error: null,
+        },
+      },
+      summaryJob: {
+        id: "550e8400-e29b-41d4-a716-446655440011",
+        original_url: "https://youtu.be/dQw4w9WgXcQ",
+        normalized_url: "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+        status: "processing",
+        provider_job_id: "provider-job-11",
+        video_title: "Видео обрабатывается",
+        next_provider_attempt_at: null,
+        provider_attempt_count: 5,
+        created_at: "2026-04-20T18:00:00.000Z",
+      },
+      profile: { credits_balance: 5 },
+    })
+    createServerSupabaseClient.mockResolvedValue(supabase)
+    pollVideoSummary.mockRejectedValue(Object.assign(new Error("Supadata limited requests"), { statusCode: 429 }))
+    const { POST } = await import("@/app/api/summarize/route")
+
+    const response = await POST(createJsonRequest({ action: "poll", jobId: "550e8400-e29b-41d4-a716-446655440011" }))
+    const payload = await response.json()
+
+    expect(response.status).toBe(409)
+    expect(payload).toMatchObject({
+      status: "error",
+      message: "Не удалось завершить обработку видео после нескольких попыток. Запустите обработку заново чуть позже.",
+      creditsRemaining: 5,
+    })
+    expect(supabase.rpc).toHaveBeenCalledWith(
+      "fail_summary_job",
+      expect.objectContaining({
+        p_job_id: "550e8400-e29b-41d4-a716-446655440011",
+        p_public_error_message: "Не удалось завершить обработку видео после нескольких попыток. Запустите обработку заново чуть позже.",
+      }),
+    )
+    expect(supabase.rpc).not.toHaveBeenCalledWith("schedule_summary_job_retry", expect.anything())
+  })
+
+  it.each([
+    "Supadata вернул неожиданный ответ при запросе транскрипта.",
+    "Supadata вернул некорректный JSON-ответ.",
+  ])("does not schedule retries for provider 502 contract errors: %s", async (message) => {
+    const supabase = createMockSupabase({
+      rpcMap: {
+        consume_summary_rate_limit: {
+          data: [{ allowed: true, retry_after_seconds: 0, remaining: 11 }],
+          error: null,
+        },
+        create_summary_job: {
+          data: [{ job_id: "job-502", was_created: true, credits_remaining: 8, video_title: null }],
+          error: null,
+        },
+        fail_summary_job: {
+          data: [{ job_id: "job-502", status: "failed", credits_remaining: 8, refunded: false }],
+          error: null,
+        },
+      },
+    })
+    createServerSupabaseClient.mockResolvedValue(supabase)
+    startVideoSummary.mockRejectedValue(Object.assign(new Error(message), { statusCode: 502 }))
+    const { POST } = await import("@/app/api/summarize/route")
+
+    const response = await POST(createJsonRequest({ action: "start", url: "https://youtu.be/dQw4w9WgXcQ" }))
+    const payload = await response.json()
+
+    expect(response.status).toBe(503)
+    expect(payload).toMatchObject({
+      status: "error",
+      creditsRemaining: 8,
+    })
+    expect(supabase.rpc).toHaveBeenCalledWith(
+      "fail_summary_job",
+      expect.objectContaining({
+        p_job_id: "job-502",
+      }),
+    )
+    expect(supabase.rpc).not.toHaveBeenCalledWith("schedule_summary_job_retry", expect.anything())
   })
 })
