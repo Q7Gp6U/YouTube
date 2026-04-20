@@ -466,6 +466,10 @@ async function requestSummary(
 }
 
 function getErrorMessage(error: unknown): string {
+  if (error instanceof TypeError && error.message === "Failed to fetch") {
+    return "Не удалось связаться с сервером. Попробуйте еще раз через несколько секунд."
+  }
+
   if (error instanceof Error && error.message.trim()) {
     return error.message
   }
