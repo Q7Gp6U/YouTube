@@ -44,6 +44,7 @@ export interface SummaryProcessingResponse extends SummaryCreditsMeta {
   status: "processing"
   jobId: string
   videoTitle: string
+  nextPollAfterMs?: number
 }
 
 export interface SummaryErrorResponse {

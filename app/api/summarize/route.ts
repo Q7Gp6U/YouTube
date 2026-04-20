@@ -38,6 +38,7 @@ const EXTERNAL_SERVICE_RATE_LIMIT_MESSAGE = "Сервис обработки в�
 const SUMMARY_FAILED_MESSAGE = "Не удалось завершить обработку видео. Попробуйте еще раз чуть позже."
 const RATE_LIMIT_TEMPORARY_ERROR_MESSAGE = "Не удалось временно проверить лимит запросов. Попробуйте чуть позже."
 const PROCESSING_VIDEO_TITLE = "Видео обрабатывается"
+const DEFAULT_PROCESSING_POLL_DELAY_MS = 12_000
 const PROVIDER_RETRY_BASE_DELAY_MS = 30_000
 const PROVIDER_RETRY_MAX_DELAY_MS = 15 * 60 * 1_000
 
@@ -187,12 +188,7 @@ async function handleStartRequest(
   let shouldRefundOnFailure = true
 
   if (!reservation.was_created) {
-    return {
-      status: "processing",
-      jobId: reservation.job_id,
-      videoTitle: reservation.video_title || "Видео обрабатывается",
-      creditsRemaining: reservation.credits_remaining,
-    }
+    return buildProcessingResponse(reservation.job_id, reservation.credits_remaining, reservation.video_title)
   }
 
   try {
@@ -229,6 +225,8 @@ async function handleStartRequest(
     logSummaryProcessingError("start", error, reservation.job_id)
 
     if (isTransientProviderError(error)) {
+      const nextPollAfterMs = calculateProviderRetryDelayMs(0)
+
       await scheduleSummaryJobRetry(supabase, {
         jobId: reservation.job_id,
         providerAttemptCount: 0,
@@ -236,7 +234,9 @@ async function handleStartRequest(
         internalMessage: getInternalSummaryFailureDetails(error),
       })
 
-      return buildProcessingResponse(reservation.job_id, reservation.credits_remaining, reservation.video_title)
+      return buildProcessingResponse(reservation.job_id, reservation.credits_remaining, reservation.video_title, {
+        nextPollAfterMs,
+      })
     }
 
     const publicMessage = getPublicProcessingErrorMessage(error)
@@ -277,7 +277,9 @@ async function handlePollRequest(
   }
 
   if (shouldWaitForProviderRetry(job)) {
-    return buildProcessingResponse(job.id, creditsRemaining, job.video_title)
+    return buildProcessingResponse(job.id, creditsRemaining, job.video_title, {
+      nextPollAfterMs: getRemainingProviderRetryDelayMs(job),
+    })
   }
 
   if (!job.provider_job_id) {
@@ -305,6 +307,8 @@ async function handlePollRequest(
     logSummaryProcessingError("poll", error, job.id)
 
     if (isTransientProviderError(error)) {
+      const nextPollAfterMs = calculateProviderRetryDelayMs(job.provider_attempt_count)
+
       await scheduleSummaryJobRetry(supabase, {
         jobId: job.id,
         providerAttemptCount: job.provider_attempt_count,
@@ -312,7 +316,9 @@ async function handlePollRequest(
         internalMessage: getInternalSummaryFailureDetails(error),
       })
 
-      return buildProcessingResponse(job.id, creditsRemaining, job.video_title)
+      return buildProcessingResponse(job.id, creditsRemaining, job.video_title, {
+        nextPollAfterMs,
+      })
     }
 
     const publicMessage = getPublicProcessingErrorMessage(error)
@@ -367,6 +373,8 @@ async function retrySummaryStart(
     logSummaryProcessingError("start", error, job.id)
 
     if (isTransientProviderError(error)) {
+      const nextPollAfterMs = calculateProviderRetryDelayMs(job.provider_attempt_count)
+
       await scheduleSummaryJobRetry(supabase, {
         jobId: job.id,
         providerAttemptCount: job.provider_attempt_count,
@@ -374,7 +382,9 @@ async function retrySummaryStart(
         internalMessage: getInternalSummaryFailureDetails(error),
       })
 
-      return buildProcessingResponse(job.id, creditsRemaining, job.video_title)
+      return buildProcessingResponse(job.id, creditsRemaining, job.video_title, {
+        nextPollAfterMs,
+      })
     }
 
     const publicMessage = getPublicProcessingErrorMessage(error)
@@ -560,12 +570,16 @@ function buildProcessingResponse(
   jobId: string,
   creditsRemaining: number,
   videoTitle?: string | null,
+  options?: {
+    nextPollAfterMs?: number | null
+  },
 ): SummaryProcessingResponse {
   return {
     status: "processing",
     jobId,
     videoTitle: videoTitle || PROCESSING_VIDEO_TITLE,
     creditsRemaining,
+    nextPollAfterMs: normalizePollDelayMs(options?.nextPollAfterMs ?? DEFAULT_PROCESSING_POLL_DELAY_MS),
   }
 }
 
@@ -822,8 +836,26 @@ function shouldWaitForProviderRetry(job: Pick<SummaryJobRow, "next_provider_atte
   return retryAtMs !== null && retryAtMs > Date.now()
 }
 
+function getRemainingProviderRetryDelayMs(job: Pick<SummaryJobRow, "next_provider_attempt_at">) {
+  const retryAtMs = parseTimestamp(job.next_provider_attempt_at)
+
+  if (retryAtMs === null) {
+    return DEFAULT_PROCESSING_POLL_DELAY_MS
+  }
+
+  return retryAtMs - Date.now()
+}
+
 function calculateProviderRetryDelayMs(providerAttemptCount: number) {
   return Math.min(PROVIDER_RETRY_MAX_DELAY_MS, PROVIDER_RETRY_BASE_DELAY_MS * 2 ** Math.max(0, providerAttemptCount))
+}
+
+function normalizePollDelayMs(delayMs: number) {
+  if (!Number.isFinite(delayMs)) {
+    return DEFAULT_PROCESSING_POLL_DELAY_MS
+  }
+
+  return Math.max(1_000, Math.round(delayMs))
 }
 
 function parseTimestamp(value: string | null) {

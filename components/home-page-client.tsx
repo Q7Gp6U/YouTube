@@ -36,7 +36,7 @@ type InfoItem = {
   description: string
 }
 
-const MAX_POLL_ATTEMPTS = 12
+const MAX_POLL_DURATION_MS = 45 * 60 * 1_000
 const POLL_INTERVAL_STEPS_MS = [4000, 6500, 9000, 12000]
 const INFO_PANEL_COPY: Record<InfoPanelKey, { eyebrow: string; title: string; description: string }> = {
   "how-it-works": {
@@ -177,7 +177,7 @@ export function HomePageClient({ user }: { user: AuthenticatedAppUser }) {
         setLoadingStatus("Транскрипт еще собирается. Повторяем запрос с безопасной паузой...")
         setLoadingHint("Интервалы между проверками постепенно растут, чтобы не упираться в лимиты внешних сервисов.")
 
-        const completed = await pollUntilComplete(startResult.jobId, controller.signal, requestId)
+        const completed = await pollUntilComplete(startResult, controller.signal, requestId)
         applyCompletedSummary(completed)
         return
       }
@@ -228,21 +228,29 @@ export function HomePageClient({ user }: { user: AuthenticatedAppUser }) {
   }
 
   const pollUntilComplete = async (
-    jobId: string,
+    initialResult: SummaryProcessingResponse,
     signal: AbortSignal,
     requestId: number,
   ): Promise<SummaryCompletedResponse> => {
-    for (let attempt = 0; attempt < MAX_POLL_ATTEMPTS; attempt += 1) {
-      const delayMs = getPollInterval(attempt)
+    const startedAt = Date.now()
+    let attempt = 0
+    let nextDelayMs = getNextPollDelay(initialResult, attempt)
+
+    while (Date.now() - startedAt < MAX_POLL_DURATION_MS) {
+      const elapsedMs = Date.now() - startedAt
 
       setLoadingStatus(
         attempt === 0
           ? "Supadata обрабатывает видео. Ждем первую готовую порцию данных..."
-          : `Видео еще в очереди. Проверка ${attempt + 1} из ${MAX_POLL_ATTEMPTS} через ${Math.round(delayMs / 1000)} сек.`,
+          : `Видео еще в очереди. Следующая проверка через ${Math.round(nextDelayMs / 1000)} сек.`,
       )
       setLoadingHint("Страница остается открытой и мягко повторяет запросы, пока бэкенд не вернет готовую выжимку.")
 
-      await wait(delayMs, signal)
+      if (elapsedMs + nextDelayMs > MAX_POLL_DURATION_MS) {
+        break
+      }
+
+      await wait(nextDelayMs, signal)
 
       if (requestId !== activeRequestIdRef.current) {
         throw createAbortError()
@@ -251,7 +259,7 @@ export function HomePageClient({ user }: { user: AuthenticatedAppUser }) {
       const pollResult = await requestSummary(
         {
           action: "poll",
-          jobId,
+          jobId: initialResult.jobId,
         },
         signal,
       )
@@ -264,13 +272,15 @@ export function HomePageClient({ user }: { user: AuthenticatedAppUser }) {
 
       if (pollResult.status === "processing") {
         setLoadingVideoTitle(pollResult.videoTitle)
+        attempt += 1
+        nextDelayMs = getNextPollDelay(pollResult, attempt)
         continue
       }
 
       return pollResult
     }
 
-    throw new Error("Видео обрабатывается слишком долго. Попробуйте еще раз через минуту.")
+    throw new Error("Видео обрабатывается дольше обычного. Попробуйте открыть его снова немного позже.")
   }
 
   return (
@@ -501,6 +511,18 @@ function wait(delayMs: number, signal?: AbortSignal): Promise<void> {
 
 function getPollInterval(attempt: number): number {
   return POLL_INTERVAL_STEPS_MS[Math.min(attempt, POLL_INTERVAL_STEPS_MS.length - 1)]
+}
+
+function getNextPollDelay(result: SummaryProcessingResponse, attempt: number): number {
+  return normalizePollDelay(result.nextPollAfterMs) ?? getPollInterval(attempt)
+}
+
+function normalizePollDelay(delayMs?: number): number | null {
+  if (typeof delayMs !== "number" || !Number.isFinite(delayMs)) {
+    return null
+  }
+
+  return Math.max(1_000, Math.round(delayMs))
 }
 
 function abortActiveRequest(controllerRef: MutableRefObject<AbortController | null>) {
